@@ -127,12 +127,27 @@ async def test_mcp_tools_and_native_file_metadata(sshd):
         tools = {tool.name: tool for tool in await client.list_tools()}
         assert {"list_hosts", "exec", "read_file", "write_file", "upload_file",
                 "job_start", "job_status", "job_output", "job_stop", "job_list"} <= set(tools)
+        for name in ("exec", "stat", "list_dir", "read_file", "write_file",
+                     "file_op", "upload_file", "job_start", "job_status",
+                     "job_output", "job_stop", "job_list"):
+            schema = tools[name].input_schema
+            description = schema["properties"]["host"]["description"]
+            assert "ssh://username@hostname[:port]" in description, name
+            assert "SSH_KEYS" in description, name
+            assert "HOST_<NAME>" in description, name
         definition = tools["upload_file"].model_dump(by_alias=True)
         assert (definition.get("_meta") or definition.get("meta"))["openai/fileParams"] == ["file"]
         called = await client.call_tool("exec", {"host": "HOST_LOCAL", "command": "printf hello"})
         data = json.loads(called.content[0].text)
         assert data["status"] == "exited"
         assert data["stdout"]["data"] == "hello"
+        invalid = await client.call_tool("exec", {
+            "host": "45.32.51.15", "command": "whoami",
+        })
+        error = json.loads(invalid.content[0].text)
+        assert error["error"] == "ConfigurationError"
+        assert "ssh://username@hostname[:port]" in error["detail"]
+        assert "SSH_KEYS" in error["detail"]
 
 @pytest.mark.asyncio
 async def test_json_host_profile_over_ssh(sshd):

@@ -85,8 +85,10 @@ def test_direct_hostname_requires_ssh_url(monkeypatch):
     monkeypatch.setenv("HOST_PROD", json.dumps({
         "host": "example.org", "username": "ubuntu", "password": "secret",
     }))
-    with pytest.raises(ConfigurationError, match="environment variable"):
+    with pytest.raises(ConfigurationError, match=r"HOST_<NAME> or ssh://username@hostname"):
         resolve_target("example.org")
+    with pytest.raises(ConfigurationError, match="dynamic SSH URLs use SSH_KEYS"):
+        resolve_target("45.32.51.15")
     with pytest.raises(ConfigurationError, match="not configured"):
         resolve_target("HOST_UNKNOWN")
 

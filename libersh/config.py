@@ -25,7 +25,10 @@ class Target:
 
 def _profile(name: str) -> dict:
     if not isinstance(name, str) or not name.startswith("HOST_"):
-        raise ConfigurationError("Host must be a HOST_<NAME> environment variable")
+        raise ConfigurationError(
+            "Host must be HOST_<NAME> or ssh://username@hostname[:port]; "
+            "dynamic SSH URLs use SSH_KEYS"
+        )
     raw = os.environ.get(name)
     if raw is None:
         raise ConfigurationError(f"Host {name} is not configured")

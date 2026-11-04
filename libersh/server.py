@@ -1,9 +1,11 @@
 """Libersh MCP: authorized Linux SSH operations without command policy filters."""
 import logging
+from typing import Annotated
 
 import asyncssh
 import httpx
 from fastmcp import FastMCP
+from pydantic import Field
 
 from . import __version__
 from .config import (ConfigurationError, get_public_keys as configured_public_keys,
@@ -18,6 +20,13 @@ from .transfer import OpenAIFile, upload_reference
 
 mcp = FastMCP("Libersh", version=__version__)
 LOGGER = logging.getLogger("libersh")
+
+HostArg = Annotated[str, Field(description=(
+    "Use a configured HOST_<NAME> alias (e.g. HOST_PROD), or a dynamic "
+    "ssh://username@hostname[:port] URL (e.g. ssh://root@45.32.51.15). "
+    "Dynamic URLs use the global SSH_KEYS private keys; bare IP addresses "
+    "are not valid host arguments."
+))]
 
 
 def _error(exc: Exception) -> str:
@@ -48,7 +57,7 @@ async def _with_connection(host, action):
 
 @mcp.tool
 def list_hosts() -> str:
-    """List HOST_* profiles without disclosing passwords or private keys."""
+    """List configured HOST_* profiles, not dynamic SSH URL targets; no secrets."""
     try:
         return format_result(configured_hosts())
     except Exception as exc:
@@ -69,14 +78,16 @@ def get_public_keys(host: str | None = None) -> str:
 
 
 @mcp.tool(name="exec")
-async def exec_command(host: str, command: str,
+async def exec_command(host: HostArg, command: str,
                        cwd: str | None = None, stdin: str | None = None,
                        pty: bool = False, timeout: float = 60,
                        max_output_bytes: int = 524288) -> str:
-    """Execute a command exactly as authorized by the SSH account. No command allowlist.
+    """Execute a command via HOST_<NAME> or ssh://username@hostname[:port].
 
-    Nonzero exit is a normal command result. Timeout does not prove the remote
-    process stopped. Use job_start for durable execution or large logs.
+    Dynamic SSH URLs require SSH_KEYS, not a preconfigured host profile.
+    No command allowlist. Nonzero exit is a normal command result.
+    Timeout does not prove the remote process stopped. Use job_start for
+    durable execution or large logs.
     """
     return await _with_connection(host,
         lambda conn: execute(conn, command, cwd=cwd, stdin=stdin,
