@@ -171,9 +171,3 @@ def get_public_keys(host: str | None = None) -> dict:
             })
     return {"keys": keys}
 
-
-def job_base() -> str:
-    base = os.environ.get("LIBERSH_JOB_BASE", "/var/tmp")
-    if not base.startswith("/") or "\x00" in base:
-        raise ConfigurationError("LIBERSH_JOB_BASE must be an absolute path")
-    return base.rstrip("/") or "/"

@@ -69,7 +69,6 @@ async def sshd(monkeypatch, tmp_path):
         "password": "test-pass", "port": port,
     }))
     monkeypatch.delenv("SSH_KEYS", raising=False)
-    monkeypatch.setenv("LIBERSH_JOB_BASE", str(tmp_path))
     try:
         yield tmp_path
     finally:

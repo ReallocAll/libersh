@@ -36,9 +36,9 @@ def test_runner_lock_and_exit(tmp_path, monkeypatch):
     assert subprocess.run(["flock", "-n", "-E", "75", "-o", str(root), "true"]).returncode == 0
 
 
-def test_job_id_and_default_directory(monkeypatch):
+def test_job_id_and_fixed_directory(monkeypatch):
     assert validate_job_id("a" * 32) == "a" * 32
     with pytest.raises(ValueError):
         validate_job_id("../etc")
-    monkeypatch.setenv("LIBERSH_JOB_BASE", "/var/tmp")
+    monkeypatch.setenv("LIBERSH_JOB_BASE", "/different/path")
     assert directory(1000, "b" * 32) == "/var/tmp/libersh.1000." + "b" * 32

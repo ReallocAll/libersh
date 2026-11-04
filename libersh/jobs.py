@@ -3,9 +3,8 @@ import json
 import posixpath
 import shlex
 import time
-from .config import job_base
 from .files import read_sftp_page
-from .job_core import RUNNER, ID_RE, validate_job_id, directory, remote_uid, _read_text
+from .job_core import JOB_BASE, RUNNER, ID_RE, validate_job_id, directory, remote_uid, _read_text
 from .job_start import start_job
 
 async def status_job(conn, job_id: str) -> dict:
@@ -112,7 +111,7 @@ async def list_jobs(conn, limit: int = 50) -> dict:
     prefix = f"libersh.{uid}."
     names = []
     async with conn.start_sftp_client() as sftp:
-        async for entry in sftp.scandir(job_base()):
+        async for entry in sftp.scandir(JOB_BASE):
             name = entry.filename
             if name.startswith(prefix) and ID_RE.fullmatch(name[len(prefix):]):
                 names.append((entry.attrs.mtime or 0, name[len(prefix):]))

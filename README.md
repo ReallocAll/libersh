@@ -101,7 +101,7 @@ credentials. The separate `SSH_KEYS` variable is not a host profile. Tool argume
 
 ## Persistent Linux jobs
 
-Each job is stored under `/var/tmp/libersh.<uid>.<32-hex-id>/` (override the parent with `LIBERSH_JOB_BASE`). No remote Python environment, daemon, Redis, or long-lived Horizon connection is required.
+Each job is stored under `/var/tmp/libersh.<uid>.<32-hex-id>/` on the remote host. No remote Python environment, daemon, Redis, or long-lived Horizon connection is required.
 
 ```text
 /var/tmp/libersh.1000.0123456789abcdef0123456789abcdef/

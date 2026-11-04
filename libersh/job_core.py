@@ -2,8 +2,8 @@
 import posixpath
 import re
 import asyncssh
-from .config import job_base
 
+JOB_BASE = "/var/tmp"
 ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 RUNNER = r'''#!/bin/sh
@@ -33,7 +33,7 @@ def validate_job_id(job_id: str) -> str:
 
 def directory(uid: int, job_id: str) -> str:
     validate_job_id(job_id)
-    return posixpath.join(job_base(), f"libersh.{uid}.{job_id}")
+    return posixpath.join(JOB_BASE, f"libersh.{uid}.{job_id}")
 
 
 async def remote_uid(conn) -> int:
