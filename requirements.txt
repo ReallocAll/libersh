@@ -1,0 +1,2 @@
+# Horizon auto-detects pyproject.toml; this file is for hosts requiring requirements.txt.
+-e .
