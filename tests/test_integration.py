@@ -289,7 +289,9 @@ async def test_dynamic_ssh_url_real_key_authentication_and_mcp(monkeypatch, tmp_
         async with ssh_connection(resolve_target(url)) as conn:
             outcome = await execute(conn, "printf dynamic-ssh")
         assert outcome["stdout"]["data"] == "dynamic-ssh"
-        assert events == [("key", key.export_public_key().decode().strip())]
+        assert events
+        assert all(event == ("key", key.export_public_key().decode().strip())
+                   for event in events)
         async with Client(mcp) as client:
             command = await client.call_tool("exec", {
                 "host": url, "command": "printf dynamic-mcp",
@@ -304,7 +306,8 @@ async def test_dynamic_ssh_url_real_key_authentication_and_mcp(monkeypatch, tmp_
                 "host": url, "path": file_path,
             })
             assert json.loads(read.content[0].text)["data"] == "from-dynamic-sftp"
-        assert len(events) == 4
+        # Public-key authentication may probe the key before verifying its signature.
+        assert len(events) >= 4
         assert all(event == ("key", key.export_public_key().decode().strip())
                    for event in events)
     finally:
