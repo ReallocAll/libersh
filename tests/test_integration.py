@@ -138,7 +138,7 @@ async def test_mcp_tools_and_native_file_metadata(sshd):
 async def test_json_host_profile_over_ssh(sshd):
     target = resolve_target("SSH_LOCAL")
     assert target.username == "tester"
-    assert connection_options(target)[0]["known_hosts"] is None
+    assert next(connection_options(target))["known_hosts"] is None
     async with ssh_connection(target) as conn:
         result = await execute(conn, "printf simple-profile")
         assert result["exit_code"] == 0
@@ -151,9 +151,9 @@ async def test_json_host_profile_over_ssh(sshd):
         assert data["stdout"]["data"] == "via-mcp"
         assert "test-pass" not in (await client.call_tool("list_hosts", {})).content[0].text
         keys_tool = next(t for t in await client.list_tools() if t.name == "get_public_keys")
-        assert "host" in keys_tool.inputSchema["properties"]
+        assert "host" in keys_tool.input_schema["properties"]
         tool = next(t for t in await client.list_tools() if t.name == "exec")
-        assert not {"username", "port", "identity"} & set(tool.inputSchema["properties"])
+        assert not {"username", "port", "identity"} & set(tool.input_schema["properties"])
 
 
 class OrderedAuthServer(asyncssh.SSHServer):
@@ -255,6 +255,11 @@ async def test_host_password_wins_before_global_key(monkeypatch):
             assert len(data["keys"]) == 1
             assert data["keys"][0]["public_key"] == good_global.export_public_key().decode().strip()
             assert "PRIVATE KEY" not in result.content[0].text
+        # A broken global vault must not block a successful host password.
+        monkeypatch.setenv("SSH_KEYS", "broken-unneeded-configuration")
+        async with ssh_connection(resolve_target("SSH_PASSWORD_FIRST")) as conn:
+            confirm = await execute(conn, "printf no-global-used")
+        assert confirm["stdout"]["data"] == "no-global-used"
     finally:
         listener.close()
         await listener.wait_closed()

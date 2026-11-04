@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import asyncssh
@@ -96,7 +97,7 @@ def _known_hosts(profile: dict, name: str):
         raise ConfigurationError(f"Invalid known_hosts in {name}") from exc
 
 
-def connection_options(target: Target) -> list[dict]:
+def connection_options(target: Target) -> Iterator[dict]:
     """Build ordered, isolated authentication attempts from environment secrets.
 
     Password must run between host and global private keys, so these stages
@@ -110,9 +111,6 @@ def connection_options(target: Target) -> list[dict]:
 
     host_key = (_import_key(private_key, target.name, profile.get("passphrase"))
                 if private_key is not None else None)
-    global_keys = [_import_key(raw, f"SSH_KEYS[{name}]")
-                   for name, raw in _global_keys().items()]
-
     common = {
         "host": target.hostname, "username": target.username, "port": target.port,
         "known_hosts": _known_hosts(profile, target.name),
@@ -120,19 +118,21 @@ def connection_options(target: Target) -> list[dict]:
         "client_certs": [], "gss_auth": False, "gss_kex": False,
         "host_based_auth": False,
     }
-    attempts = []
     if host_key is not None:
-        attempts.append({**common, "client_keys": [host_key],
-                         "preferred_auth": ["publickey"]})
+        yield {**common, "client_keys": [host_key],
+               "preferred_auth": ["publickey"]}
     if password:
-        attempts.append({**common, "password": password,
-                         "preferred_auth": ["password", "keyboard-interactive"]})
+        yield {**common, "password": password,
+               "preferred_auth": ["password", "keyboard-interactive"]}
+
+    # Do not import global keys unless all host-specific attempts were rejected.
+    global_keys = [_import_key(raw, f"SSH_KEYS[{name}]")
+                   for name, raw in _global_keys().items()]
     if global_keys:
-        attempts.append({**common, "client_keys": global_keys,
-                         "preferred_auth": ["publickey"]})
-    if not attempts:
+        yield {**common, "client_keys": global_keys,
+               "preferred_auth": ["publickey"]}
+    elif host_key is None and not password:
         raise ConfigurationError(f"{target.name} requires private_key, password or SSH_KEYS")
-    return attempts
 
 
 def get_public_keys(host: str | None = None) -> dict:

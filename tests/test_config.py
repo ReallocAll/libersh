@@ -21,8 +21,8 @@ def test_multiple_hosts_and_secret_free_discovery(monkeypatch):
     target = resolve_target("SSH_PROD")
     assert (target.hostname, target.username, target.port) == (
         "192.0.2.10", "ubuntu", 2222)
-    assert connection_options(target)[0]["password"] == "prod-secret"
-    assert connection_options(target)[0]["known_hosts"] is None
+    assert list(connection_options(target))[0]["password"] == "prod-secret"
+    assert list(connection_options(target))[0]["known_hosts"] is None
     hosts = list_hosts()
     assert {x["name"] for x in hosts["hosts"]} == {"SSH_DEV", "SSH_PROD"}
     assert next(x for x in hosts["hosts"] if x["name"] == "SSH_PROD")["desc"] == "Production server"
@@ -37,7 +37,7 @@ def test_private_key(monkeypatch):
         "private_key": key.export_private_key().decode("utf-8"),
     }))
     target = resolve_target("SSH_KEYED")
-    options = connection_options(target)[0]
+    options = list(connection_options(target))[0]
     assert len(options["client_keys"]) == 1
     assert options["known_hosts"] is None
     assert "private_key" not in repr(list_hosts())
@@ -50,7 +50,7 @@ def test_verified_known_hosts_optional(monkeypatch):
         "host": "example.org", "username": "tester", "password": "secret",
         "known_hosts": "example.org " + public,
     }))
-    assert connection_options(resolve_target("SSH_VERIFIED"))[0]["known_hosts"] is not None
+    assert list(connection_options(resolve_target("SSH_VERIFIED")))[0]["known_hosts"] is not None
 
 
 @pytest.mark.parametrize("value,match", [
@@ -72,12 +72,12 @@ def test_missing_or_invalid_credentials(monkeypatch):
         "host": "example.org", "username": "root",
     }))
     with pytest.raises(ConfigurationError, match="private_key, password or SSH_KEYS"):
-        connection_options(resolve_target("SSH_EMPTY"))
+        list(connection_options(resolve_target("SSH_EMPTY")))
     monkeypatch.setenv("SSH_EMPTY", json.dumps({
         "host": "example.org", "username": "root", "private_key": "not-a-key",
     }))
     with pytest.raises(ConfigurationError, match="Invalid private_key"):
-        connection_options(resolve_target("SSH_EMPTY"))
+        list(connection_options(resolve_target("SSH_EMPTY")))
 
 
 def test_no_dynamic_host_fallback(monkeypatch):
@@ -100,7 +100,7 @@ def test_global_keys_only_and_public_key_export(monkeypatch):
     monkeypatch.setenv("SSH_BARE", json.dumps({
         "host": "example.org", "username": "ubuntu",
     }))
-    opts = connection_options(resolve_target("SSH_BARE"))
+    opts = list(connection_options(resolve_target("SSH_BARE")))
     assert len(opts) == 1
     assert opts[0]["client_keys"][0].export_public_key() == first.export_public_key()
     assert opts[0]["client_keys"][1].export_public_key() == second.export_public_key()
@@ -122,7 +122,7 @@ def test_ordered_host_private_key_password_then_global(monkeypatch):
         "private_key": host_key.export_private_key().decode(),
         "password": "host-password",
     }))
-    opts = connection_options(resolve_target("SSH_ORDER"))
+    opts = list(connection_options(resolve_target("SSH_ORDER")))
     assert len(opts) == 3
     assert opts[0]["client_keys"][0].export_public_key() == host_key.export_public_key()
     assert "password" not in opts[0]
@@ -144,7 +144,18 @@ def test_invalid_global_key_configuration(monkeypatch):
     }))
     monkeypatch.setenv("SSH_KEYS", "not-json")
     with pytest.raises(ConfigurationError, match="SSH_KEYS must"):
-        connection_options(resolve_target("SSH_BARE"))
+        list(connection_options(resolve_target("SSH_BARE")))
     monkeypatch.setenv("SSH_KEYS", json.dumps({"broken": "not-a-private-key"}))
     with pytest.raises(ConfigurationError, match="Invalid private key"):
-        connection_options(resolve_target("SSH_BARE"))
+        list(connection_options(resolve_target("SSH_BARE")))
+
+
+def test_global_key_loading_is_lazy(monkeypatch):
+    monkeypatch.setenv("SSH_KEYS", "invalid-global-keys")
+    monkeypatch.setenv("SSH_LOCAL_PASSWORD", json.dumps({
+        "host": "example.org", "username": "ubuntu", "password": "specific",
+    }))
+    attempts = connection_options(resolve_target("SSH_LOCAL_PASSWORD"))
+    assert next(attempts)["password"] == "specific"
+    with pytest.raises(ConfigurationError, match="SSH_KEYS must"):
+        next(attempts)
