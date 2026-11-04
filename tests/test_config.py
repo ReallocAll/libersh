@@ -211,3 +211,29 @@ def test_dynamic_host_uses_only_global_keys(monkeypatch):
     monkeypatch.delenv("SSH_KEYS")
     with pytest.raises(ConfigurationError, match="SSH_KEYS"):
         list(connection_options(target))
+
+
+def test_single_line_private_key_body_global_and_host(monkeypatch):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    full = key.export_private_key().decode()
+    body = "".join(full.splitlines()[1:-1])
+    assert "\n" not in body and "BEGIN" not in body and "END" not in body
+    monkeypatch.setenv("SSH_KEYS", json.dumps({"primary": body}))
+    monkeypatch.setenv("HOST_BODY", json.dumps({
+        "host": "example.org", "username": "ubuntu", "private_key": body,
+    }))
+    attempts = list(connection_options(resolve_target("HOST_BODY")))
+    assert len(attempts) == 2
+    assert all(a["client_keys"][0].export_public_key() == key.export_public_key()
+               for a in attempts)
+    exported = get_public_keys("HOST_BODY")["keys"]
+    assert [entry["source"] for entry in exported] == ["global", "host"]
+    assert all(entry["public_key"] == key.export_public_key().decode().strip()
+               for entry in exported)
+
+
+def test_invalid_single_line_private_key_does_not_leak(monkeypatch):
+    monkeypatch.setenv("SSH_KEYS", json.dumps({"bad": "not-valid-base64-SECRET"}))
+    with pytest.raises(ConfigurationError, match="Invalid private key in SSH_KEYS") as exc:
+        get_public_keys()
+    assert "not-valid-base64-SECRET" not in str(exc.value)

@@ -50,6 +50,10 @@ def _global_keys() -> dict:
 def _import_key(raw: str, label: str, passphrase: str | None = None):
     if not isinstance(raw, str) or not raw:
         raise ConfigurationError(f"{label} must contain an OpenSSH private key")
+    # Restore the OpenSSH armor when only its Base64 body is supplied.
+    if not raw.lstrip().startswith("-----BEGIN "):
+        raw = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+               + raw.strip() + "\n-----END OPENSSH PRIVATE KEY-----\n")
     try:
         return asyncssh.import_private_key(raw, passphrase=passphrase)
     except (ValueError, asyncssh.KeyImportError) as exc:

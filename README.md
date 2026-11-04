@@ -24,16 +24,27 @@ Host fields: `host` and `username` (required), `port` (default `22`),
 `private_key`, `password`, `passphrase` (for host-encrypted private keys),
 `known_hosts`, and `desc` (all optional).
 
-An additional environment variable contains multiple named **global private keys**:
+An additional environment variable contains multiple named **global private keys**.
+For a one-line Horizon configuration, copy only the **Base64 body** between the
+`BEGIN OPENSSH PRIVATE KEY` and `END OPENSSH PRIVATE KEY` lines, joining any
+wrapped Base64 lines into one:
 
 ```text
-SSH_KEYS={"main":"-----BEGIN OPENSSH PRIVATE KEY-----\\n...\\n-----END OPENSSH PRIVATE KEY-----\\n","backup":"-----BEGIN OPENSSH PRIVATE KEY-----\\n...\\n-----END OPENSSH PRIVATE KEY-----\\n"}
+SSH_KEYS={"main":"b3BlbnNzaC1rZXktdjE...","backup":"b3BlbnNzaC1rZXktdjE..."}
 ```
 
-The value is a JSON object mapping names to OpenSSH private-key strings. Keys are
-tried in JSON property insertion order. Use escaped `\\n` within JSON strings.
-There is no global password storage; a password always belongs to a specific
-host profile. No separate public-key storage is required.
+These are abbreviated placeholders, not usable keys. Libersh automatically adds
+the OpenSSH `BEGIN`/`END` markers and newlines before loading the key. The
+same shorthand is supported for a host's `private_key` field:
+
+```text
+HOST_PROD={"host":"203.0.113.10","username":"ubuntu","private_key":"b3BlbnNzaC1rZXktdjE..."}
+```
+
+**Full OpenSSH private keys remain supported**, including multiline text encoded
+in JSON with `\\n` escapes. Global keys are tried in JSON property insertion
+order. There is no global password storage; a password always belongs to a
+specific host profile. No separate public-key storage is required.
 
 **Authentication order** (skip absent credentials):
 

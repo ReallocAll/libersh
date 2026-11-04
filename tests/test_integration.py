@@ -276,9 +276,9 @@ async def test_dynamic_ssh_url_real_key_authentication_and_mcp(monkeypatch, tmp_
         process_factory=run_shell, sftp_factory=True,
     )
     try:
-        monkeypatch.setenv("SSH_KEYS", json.dumps({
-            "vultr": key.export_private_key().decode("utf-8"),
-        }))
+        # The real SSH handshake must accept a bare single-line OpenSSH body.
+        key_body = "".join(key.export_private_key().decode().splitlines()[1:-1])
+        monkeypatch.setenv("SSH_KEYS", json.dumps({"vultr": key_body}))
         # A dynamic host must not use credentials from a matching stored host.
         monkeypatch.setenv("HOST_WRONG", json.dumps({
             "host": "127.0.0.1", "username": "tester",
