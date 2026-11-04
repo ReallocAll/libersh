@@ -1,4 +1,5 @@
 """Single JSON HOST_<NAME> profile configuration contracts."""
+import base64
 import json
 
 import asyncssh
@@ -237,3 +238,67 @@ def test_invalid_single_line_private_key_does_not_leak(monkeypatch):
     with pytest.raises(ConfigurationError, match="Invalid private key in SSH_KEYS") as exc:
         get_public_keys()
     assert "not-valid-base64-SECRET" not in str(exc.value)
+
+
+@pytest.mark.parametrize("algorithm,format_name", [
+    ("ssh-rsa", "pkcs1-der"),
+    ("ssh-rsa", "pkcs8-der"),
+    ("ecdsa-sha2-nistp256", "pkcs1-der"),
+    ("ecdsa-sha2-nistp256", "pkcs8-der"),
+    ("ssh-ed25519", "pkcs8-der"),
+])
+def test_der_base64_private_key_global_and_host(monkeypatch, algorithm, format_name):
+    key = asyncssh.generate_private_key(algorithm)
+    body = base64.b64encode(key.export_private_key(format_name)).decode("ascii")
+    monkeypatch.setenv("SSH_KEYS", json.dumps({"global": body}))
+    monkeypatch.setenv("HOST_DER", json.dumps({
+        "host": "example.org", "username": "ubuntu", "private_key": body,
+    }))
+    attempts = list(connection_options(resolve_target("HOST_DER")))
+    assert len(attempts) == 2
+    assert all(attempt["client_keys"][0].export_public_key() == key.export_public_key()
+               for attempt in attempts)
+    exported = get_public_keys("HOST_DER")["keys"]
+    assert [item["source"] for item in exported] == ["global", "host"]
+    assert all(item["public_key"] == key.export_public_key().decode().strip()
+               for item in exported)
+
+
+@pytest.mark.parametrize("format_name", ["pkcs1-pem", "pkcs8-pem"])
+def test_pem_body_and_full_pem_still_supported(monkeypatch, format_name):
+    key = asyncssh.generate_private_key("ssh-rsa")
+    complete = key.export_private_key(format_name).decode("ascii")
+    body = "".join(complete.splitlines()[1:-1])
+    monkeypatch.setenv("SSH_KEYS", json.dumps({"from_pem_body": body, "full_pem": complete}))
+    keys = get_public_keys()["keys"]
+    assert len(keys) == 2
+    assert all(item["public_key"] == key.export_public_key().decode().strip()
+               for item in keys)
+
+
+def test_encrypted_pkcs8_der_base64_host_passphrase(monkeypatch):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    body = base64.b64encode(
+        key.export_private_key("pkcs8-der", passphrase="secret-phrase")
+    ).decode("ascii")
+    monkeypatch.setenv("HOST_ENCRYPTED", json.dumps({
+        "host": "example.org", "username": "ubuntu",
+        "private_key": body, "passphrase": "secret-phrase",
+    }))
+    target = resolve_target("HOST_ENCRYPTED")
+    assert next(connection_options(target))["client_keys"][0].export_public_key() == key.export_public_key()
+    assert get_public_keys("HOST_ENCRYPTED")["keys"][0]["public_key"] == key.export_public_key().decode().strip()
+    monkeypatch.setenv("HOST_ENCRYPTED", json.dumps({
+        "host": "example.org", "username": "ubuntu",
+        "private_key": body, "passphrase": "wrong",
+    }))
+    with pytest.raises(ConfigurationError, match="Invalid private key"):
+        list(connection_options(resolve_target("HOST_ENCRYPTED")))
+
+
+def test_malformed_der_base64_reports_safe_error(monkeypatch):
+    invalid = base64.b64encode(b"not-an-ASN1-private-key").decode("ascii")
+    monkeypatch.setenv("SSH_KEYS", json.dumps({"broken": invalid}))
+    with pytest.raises(ConfigurationError, match="Invalid private key in SSH_KEYS") as exc:
+        get_public_keys()
+    assert invalid not in str(exc.value)

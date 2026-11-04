@@ -1,5 +1,7 @@
 """HOST_<NAME> host profiles and an optional SSH_KEYS global private-key map."""
 
+import base64
+import binascii
 import json
 import os
 from collections.abc import Iterator
@@ -49,14 +51,20 @@ def _global_keys() -> dict:
 
 def _import_key(raw: str, label: str, passphrase: str | None = None):
     if not isinstance(raw, str) or not raw:
-        raise ConfigurationError(f"{label} must contain an OpenSSH private key")
-    # Restore the OpenSSH armor when only its Base64 body is supplied.
-    if not raw.lstrip().startswith("-----BEGIN "):
-        raw = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
-               + raw.strip() + "\n-----END OPENSSH PRIVATE KEY-----\n")
+        raise ConfigurationError(f"{label} must contain a private key")
     try:
-        return asyncssh.import_private_key(raw, passphrase=passphrase)
-    except (ValueError, asyncssh.KeyImportError) as exc:
+        if raw.lstrip().startswith("-----BEGIN "):
+            data = raw
+        else:
+            # OpenSSH wraps a custom binary format; PKCS#1/PKCS#8 use DER.
+            binary = base64.b64decode(raw.strip(), validate=True)
+            if binary.startswith(b"openssh-key-v1\x00"):
+                data = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                        + raw.strip() + "\n-----END OPENSSH PRIVATE KEY-----\n")
+            else:
+                data = binary
+        return asyncssh.import_private_key(data, passphrase=passphrase)
+    except (ValueError, binascii.Error, asyncssh.KeyImportError) as exc:
         raise ConfigurationError(f"Invalid private key in {label}") from exc
 
 

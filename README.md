@@ -25,26 +25,28 @@ Host fields: `host` and `username` (required), `port` (default `22`),
 `known_hosts`, and `desc` (all optional).
 
 An additional environment variable contains multiple named **global private keys**.
-For a one-line Horizon configuration, copy only the **Base64 body** between the
-`BEGIN OPENSSH PRIVATE KEY` and `END OPENSSH PRIVATE KEY` lines, joining any
-wrapped Base64 lines into one:
+The easiest Horizon configuration is a single-line Base64 body, without PEM
+`BEGIN`/`END` markers or newline escapes:
 
 ```text
-SSH_KEYS={"main":"b3BlbnNzaC1rZXktdjE...","backup":"b3BlbnNzaC1rZXktdjE..."}
+SSH_KEYS={"main":"b3BlbnNzaC1rZXktdjE...","backup":"MIIE..."}
+HOST_PROD={"host":"203.0.113.10","username":"ubuntu","private_key":"MIIE..."}
 ```
 
-These are abbreviated placeholders, not usable keys. Libersh automatically adds
-the OpenSSH `BEGIN`/`END` markers and newlines before loading the key. The
-same shorthand is supported for a host's `private_key` field:
+The values above are abbreviated placeholders, **not working private keys**.
+Copy the complete Base64 body of an OpenSSH, PKCS#1, or PKCS#8 private key
+(join any wrapped lines). Libersh decodes the Base64: OpenSSH's
+`openssh-key-v1` header is recognized and its PEM armor restored; otherwise
+the decoded DER is passed directly to AsyncSSH for PKCS#1/PKCS#8 parsing.
+The same behavior applies to both `SSH_KEYS` and host-specific `private_key`.
 
-```text
-HOST_PROD={"host":"203.0.113.10","username":"ubuntu","private_key":"b3BlbnNzaC1rZXktdjE..."}
-```
-
-**Full OpenSSH private keys remain supported**, including multiline text encoded
-in JSON with `\\n` escapes. Global keys are tried in JSON property insertion
-order. There is no global password storage; a password always belongs to a
-specific host profile. No separate public-key storage is required.
+Full PEM/OpenSSH private keys remain supported (encode multiline strings in
+JSON using `\\n`). For legacy encrypted PEM with `Proc-Type` / `DEK-Info`
+headers, retain the full PEM text; removing these encryption parameters makes
+the key unusable. Encrypted PKCS#8 DER and encrypted OpenSSH keys require a
+host-specific `passphrase`; global `SSH_KEYS` does not accept a passphrase.
+Global keys are tried in JSON insertion order. There is no global password
+storage and no separate public-key storage.
 
 **Authentication order** (skip absent credentials):
 

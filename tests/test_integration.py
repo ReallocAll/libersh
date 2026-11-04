@@ -1,5 +1,6 @@
 """Real SSH protocol + SFTP over loopback, against ephemeral AsyncSSH sshd."""
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -307,6 +308,36 @@ async def test_dynamic_ssh_url_real_key_authentication_and_mcp(monkeypatch, tmp_
             assert json.loads(read.content[0].text)["data"] == "from-dynamic-sftp"
         # Public-key authentication may probe the key before verifying its signature.
         assert len(events) >= 4
+        assert all(event == ("key", key.export_public_key().decode().strip())
+                   for event in events)
+    finally:
+        listener.close()
+        await listener.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_ssh_pkcs8_der_global_key(monkeypatch):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    body = base64.b64encode(
+        key.export_private_key("pkcs8-der")
+    ).decode("ascii")
+    events = []
+    listener = await asyncssh.listen(
+        "127.0.0.1", 0,
+        server_factory=lambda: OrderedAuthServer(
+            key.export_public_key().decode().strip(), "never", events),
+        server_host_keys=[asyncssh.generate_private_key("ssh-ed25519")],
+        process_factory=run_shell,
+    )
+    try:
+        monkeypatch.setenv("SSH_KEYS", json.dumps({"pkcs8": body}))
+        url = f"ssh://tester@127.0.0.1:{listener.get_port()}"
+        async with Client(mcp) as client:
+            result = await client.call_tool("exec", {
+                "host": url, "command": "printf pkcs8-authenticated",
+            })
+            assert json.loads(result.content[0].text)["stdout"]["data"] == "pkcs8-authenticated"
+        assert events
         assert all(event == ("key", key.export_public_key().decode().strip())
                    for event in events)
     finally:
