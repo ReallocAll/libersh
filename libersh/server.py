@@ -5,6 +5,7 @@ from typing import Annotated
 import asyncssh
 import httpx
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from . import __version__
@@ -29,7 +30,7 @@ HostArg = Annotated[str, Field(description=(
 ))]
 
 
-def _error(exc: Exception) -> str:
+def _error(exc: Exception) -> ToolResult:
     # A signed ChatGPT download URL can occur in httpx exception text.
     if isinstance(exc, httpx.HTTPStatusError):
         detail = f"Attachment server returned HTTP {exc.response.status_code}"
@@ -43,36 +44,36 @@ def _error(exc: Exception) -> str:
         detail = str(exc)
     else:
         detail = type(exc).__name__
-    return format_result({"error": type(exc).__name__, "detail": detail})
+    return ToolResult(content=format_result({"error": type(exc).__name__, "detail": detail}))
 
 
-async def _with_connection(host, action):
+async def _with_connection(host, action) -> ToolResult:
     try:
         target = resolve_target(host)
         async with ssh_connection(target) as conn:
-            return format_result(await action(conn))
+            return ToolResult(content=format_result(await action(conn)))
     except (Exception) as exc:
         return _error(exc)
 
 
 @mcp.tool
-def list_hosts() -> str:
+def list_hosts() -> ToolResult:
     """List configured HOST_* profiles, not dynamic SSH URL targets; no secrets."""
     try:
-        return format_result(configured_hosts())
+        return ToolResult(content=format_result(configured_hosts()))
     except Exception as exc:
         return _error(exc)
 
 
 @mcp.tool
-def get_public_keys(host: str | None = None) -> str:
+def get_public_keys(host: str | None = None) -> ToolResult:
     """Return plaintext OpenSSH public keys for all SSH_KEYS entries and an optional host key.
 
     Use host="HOST_PROD" to include that host's private_key-derived public key.
     Private keys, passwords and passphrases are never returned.
     """
     try:
-        return format_result(configured_public_keys(host))
+        return ToolResult(content=format_result(configured_public_keys(host)))
     except Exception as exc:
         return _error(exc)
 
@@ -81,7 +82,7 @@ def get_public_keys(host: str | None = None) -> str:
 async def exec_command(host: HostArg, command: str,
                        cwd: str | None = None, stdin: str | None = None,
                        pty: bool = False, timeout: float = 60,
-                       max_output_bytes: int = 524288) -> str:
+                       max_output_bytes: int = 524288) -> ToolResult:
     """Execute a command via HOST_<NAME> or ssh://username@hostname[:port].
 
     Dynamic SSH URLs require SSH_KEYS, not a preconfigured host profile.

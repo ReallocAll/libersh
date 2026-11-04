@@ -138,16 +138,27 @@ async def test_mcp_tools_and_native_file_metadata(sshd):
         definition = tools["upload_file"].model_dump(by_alias=True)
         assert (definition.get("_meta") or definition.get("meta"))["openai/fileParams"] == ["file"]
         called = await client.call_tool("exec", {"host": "HOST_LOCAL", "command": "printf hello"})
+        assert called.structured_content is None
+        assert len(called.content) == 1
         data = json.loads(called.content[0].text)
         assert data["status"] == "exited"
         assert data["stdout"]["data"] == "hello"
         invalid = await client.call_tool("exec", {
             "host": "45.32.51.15", "command": "whoami",
         })
+        assert invalid.structured_content is None
+        assert len(invalid.content) == 1
         error = json.loads(invalid.content[0].text)
         assert error["error"] == "ConfigurationError"
         assert "ssh://username@hostname[:port]" in error["detail"]
         assert "SSH_KEYS" in error["detail"]
+        hosts_result = await client.call_tool("list_hosts", {})
+        assert hosts_result.structured_content is None
+        assert len(hosts_result.content) == 1
+        assert json.loads(hosts_result.content[0].text)["hosts"]
+        keys_result = await client.call_tool("get_public_keys", {})
+        assert keys_result.structured_content is None
+        assert len(keys_result.content) == 1
 
 @pytest.mark.asyncio
 async def test_json_host_profile_over_ssh(sshd):
