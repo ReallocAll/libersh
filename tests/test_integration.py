@@ -263,3 +263,50 @@ async def test_host_password_wins_before_global_key(monkeypatch):
     finally:
         listener.close()
         await listener.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_ssh_url_real_key_authentication_and_mcp(monkeypatch, tmp_path):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    events = []
+    listener = await asyncssh.listen(
+        "127.0.0.1", 0,
+        server_factory=lambda: OrderedAuthServer(
+            key.export_public_key().decode().strip(), "not-the-password", events),
+        server_host_keys=[asyncssh.generate_private_key("ssh-ed25519")],
+        process_factory=run_shell, sftp_factory=True,
+    )
+    try:
+        monkeypatch.setenv("SSH_KEYS", json.dumps({
+            "vultr": key.export_private_key().decode("utf-8"),
+        }))
+        # A dynamic host must not use credentials from a matching stored host.
+        monkeypatch.setenv("SSH_WRONG", json.dumps({
+            "host": "127.0.0.1", "username": "tester",
+            "password": "unwanted-password", "port": listener.get_port(),
+        }))
+        url = f"ssh://tester@127.0.0.1:{listener.get_port()}"
+        async with ssh_connection(resolve_target(url)) as conn:
+            outcome = await execute(conn, "printf dynamic-ssh")
+        assert outcome["stdout"]["data"] == "dynamic-ssh"
+        assert events == [("key", key.export_public_key().decode().strip())]
+        async with Client(mcp) as client:
+            command = await client.call_tool("exec", {
+                "host": url, "command": "printf dynamic-mcp",
+            })
+            assert json.loads(command.content[0].text)["stdout"]["data"] == "dynamic-mcp"
+            file_path = str(tmp_path / "dynamic.txt")
+            written = await client.call_tool("write_file", {
+                "host": url, "path": file_path, "data": "from-dynamic-sftp",
+            })
+            assert json.loads(written.content[0].text)["bytes_written"] == 17
+            read = await client.call_tool("read_file", {
+                "host": url, "path": file_path,
+            })
+            assert json.loads(read.content[0].text)["data"] == "from-dynamic-sftp"
+        assert len(events) == 4
+        assert all(event == ("key", key.export_public_key().decode().strip())
+                   for event in events)
+    finally:
+        listener.close()
+        await listener.wait_closed()

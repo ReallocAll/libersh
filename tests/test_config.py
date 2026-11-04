@@ -80,7 +80,7 @@ def test_missing_or_invalid_credentials(monkeypatch):
         list(connection_options(resolve_target("SSH_EMPTY")))
 
 
-def test_no_dynamic_host_fallback(monkeypatch):
+def test_direct_hostname_requires_ssh_url(monkeypatch):
     monkeypatch.setenv("SSH_PROD", json.dumps({
         "host": "example.org", "username": "ubuntu", "password": "secret",
     }))
@@ -159,3 +159,55 @@ def test_global_key_loading_is_lazy(monkeypatch):
     assert next(attempts)["password"] == "specific"
     with pytest.raises(ConfigurationError, match="SSH_KEYS must"):
         next(attempts)
+
+
+@pytest.mark.parametrize("uri,hostname,username,port", [
+    ("ssh://ubuntu@example.org", "example.org", "ubuntu", 22),
+    ("ssh://root@203.0.113.42:2222", "203.0.113.42", "root", 2222),
+    ("ssh://ubuntu@[2001:db8::1]", "2001:db8::1", "ubuntu", 22),
+    ("ssh://admin@[2001:db8::2]:2200", "2001:db8::2", "admin", 2200),
+])
+def test_dynamic_ssh_url(uri, hostname, username, port):
+    target = resolve_target(uri)
+    assert (target.hostname, target.username, target.port) == (hostname, username, port)
+    assert target.name == uri
+
+
+@pytest.mark.parametrize("uri", [
+    "ssh://example.org",  # username required
+    "ssh://ubuntu@",  # host required
+    "ssh://ubuntu:secret@example.org",  # no URL passwords
+    "ssh://ubuntu@example.org:0",
+    "ssh://ubuntu@example.org:65536",
+    "ssh://ubuntu@example.org:nope",
+    "ssh://ubuntu@example.org/path",
+    "ssh://ubuntu@example.org?key=foo",
+    "ssh://ubuntu@example.org#fragment",
+    "ssh://ubuntu@[2001:db8::1",  # unclosed IPv6
+])
+def test_dynamic_ssh_url_invalid(uri):
+    with pytest.raises(ConfigurationError):
+        resolve_target(uri)
+
+
+def test_dynamic_host_uses_only_global_keys(monkeypatch):
+    main = asyncssh.generate_private_key("ssh-ed25519")
+    monkeypatch.setenv("SSH_KEYS", json.dumps({
+        "main": main.export_private_key().decode("utf-8"),
+    }))
+    monkeypatch.setenv("SSH_PROD", json.dumps({
+        "host": "example.org", "username": "ubuntu",
+        "password": "private-password",
+    }))
+    target = resolve_target("ssh://ubuntu@example.org")
+    options = list(connection_options(target))
+    assert len(options) == 1
+    assert options[0]["client_keys"][0].export_public_key() == main.export_public_key()
+    assert "password" not in options[0]
+    assert options[0]["agent_path"] is None and options[0]["config"] is None
+    assert options[0]["known_hosts"] is None
+    assert get_public_keys(target.name)["keys"][0]["name"] == "main"
+    assert "private-password" not in repr(options)
+    monkeypatch.delenv("SSH_KEYS")
+    with pytest.raises(ConfigurationError, match="SSH_KEYS"):
+        list(connection_options(target))

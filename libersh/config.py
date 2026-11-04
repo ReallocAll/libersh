@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
+from urllib.parse import unquote, urlsplit
 
 import asyncssh
 
@@ -56,6 +57,22 @@ def _import_key(raw: str, label: str, passphrase: str | None = None):
 
 
 def resolve_target(host: str) -> Target:
+    if isinstance(host, str) and host.startswith("ssh://"):
+        try:
+            uri = urlsplit(host)
+            hostname = uri.hostname
+            username = unquote(uri.username) if uri.username is not None else None
+            port = uri.port if uri.port is not None else 22
+        except ValueError as exc:
+            raise ConfigurationError("Invalid SSH URL") from exc
+        if (not hostname or not username or "\x00" in username or "\x00" in hostname
+                or uri.password is not None or uri.path not in ("", "/")
+                or uri.query or uri.fragment or not 1 <= port <= 65535):
+            raise ConfigurationError(
+                "SSH URL must be ssh://username@host[:port] without password, path or query"
+            )
+        return Target(host, hostname, username, port)
+
     config = _profile(host)
     hostname = config.get("host")
     username = config.get("username")
@@ -98,12 +115,12 @@ def _known_hosts(profile: dict, name: str):
 
 
 def connection_options(target: Target) -> Iterator[dict]:
-    """Build ordered, isolated authentication attempts from environment secrets.
+    """Build ordered authentication attempts from environment-provided credentials.
 
-    Password must run between host and global private keys, so these stages
-    use separate SSH connections rather than AsyncSSH's publickey-first default.
+    Dynamic ssh:// hosts only receive SSH_KEYS. Configured hosts retain the
+    host private key -> host password -> global private keys precedence.
     """
-    profile = _profile(target.name)
+    profile = {} if target.name.startswith("ssh://") else _profile(target.name)
     password = profile.get("password")
     private_key = profile.get("private_key")
     if password is not None and (not isinstance(password, str) or not password):
@@ -143,7 +160,7 @@ def get_public_keys(host: str | None = None) -> dict:
                        .export_public_key().decode("utf-8").strip()}
         for name, raw in _global_keys().items()
     ]
-    if host is not None:
+    if host is not None and not host.startswith("ssh://"):
         profile = _profile(host)
         raw = profile.get("private_key")
         if raw is not None:

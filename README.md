@@ -11,7 +11,7 @@ Libersh exposes SSH capabilities allowed by the configured account. There are no
 - Run locally: `python -m pip install -e . && python mcp_server.py`
 - Streamable HTTP, stateless MCP instances; set `PORT` if necessary
 
-### Host profiles and global private keys
+### Host profiles, dynamic SSH URLs, and global private keys
 
 Each host is one Horizon JSON environment variable, named after the host alias:
 
@@ -58,9 +58,27 @@ identity is **not verified**, allowing active network impersonation.
 Supply verified OpenSSH known_hosts entries in the host JSON to enable it.
 This is separate from account authentication and command authorization.
 
-Host selection in tools uses `host="SSH_PROD"`; `list_hosts` lists aliases
-without credentials and does not treat `SSH_KEYS` as a host. The tool
-arguments do not accept `username`, `port`, or `identity` overrides.
+Use `host="SSH_PROD"` to select a configured host. For an ephemeral
+VPS (for example, created with Vultr and provisioned with a public key
+derived from `get_public_keys()`), pass a direct SSH URL to **any**
+SSH/SFTP/job tool without creating a Horizon environment variable:
+
+```text
+exec(host="ssh://ubuntu@203.0.113.42", command="uname -a")
+exec(host="ssh://root@203.0.113.42:2222", command="id")
+read_file(host="ssh://ubuntu@[2001:db8::1]", path="/etc/os-release")
+```
+
+Dynamic SSH URLs require a username and host, with optional port
+(default `22`). They use **only the global `SSH_KEYS` private keys**,
+and never any host-specific password/key, local SSH config, key file,
+or agent identity. URLs cannot include a password, file path or query.
+Dynamic targets are not added to `list_hosts`, and because they have
+no `known_hosts` profile, **server identity is not verified**.
+Provision a target only when you intend to grant it SSH access with
+the global public key(s). `list_hosts` lists configured aliases without
+credentials and excludes `SSH_KEYS`. Tool arguments have no
+`username`, `port`, or `identity` overrides.
 
 ## Tools
 
