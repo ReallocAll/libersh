@@ -1,4 +1,4 @@
-"""SSH_<NAME> host profiles and an optional SSH_KEYS global private-key map."""
+"""HOST_<NAME> host profiles and an optional SSH_KEYS global private-key map."""
 
 import json
 import os
@@ -22,11 +22,11 @@ class Target:
 
 
 def _profile(name: str) -> dict:
-    if not isinstance(name, str) or not name.startswith("SSH_") or name == "SSH_KEYS":
-        raise ConfigurationError("Host must be an SSH_<NAME> environment variable")
+    if not isinstance(name, str) or not name.startswith("HOST_"):
+        raise ConfigurationError("Host must be a HOST_<NAME> environment variable")
     raw = os.environ.get(name)
     if raw is None:
-        raise ConfigurationError(f"SSH host {name} is not configured")
+        raise ConfigurationError(f"Host {name} is not configured")
     try:
         config = json.loads(raw)
     except ValueError as exc:
@@ -89,8 +89,8 @@ def resolve_target(host: str) -> Target:
 def list_hosts() -> dict:
     """Expose host aliases and connection metadata, never credentials."""
     hosts = []
-    for name, raw in sorted(os.environ.items()):
-        if name == "SSH_KEYS" or not name.startswith("SSH_") or not raw.lstrip().startswith("{"):
+    for name in sorted(os.environ):
+        if not name.startswith("HOST_"):
             continue
         target = resolve_target(name)
         profile = _profile(name)

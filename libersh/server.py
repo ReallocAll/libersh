@@ -48,7 +48,7 @@ async def _with_connection(host, action):
 
 @mcp.tool
 def list_hosts() -> str:
-    """List SSH_* host profiles without disclosing passwords or private keys."""
+    """List HOST_* profiles without disclosing passwords or private keys."""
     try:
         return format_result(configured_hosts())
     except Exception as exc:
@@ -59,7 +59,7 @@ def list_hosts() -> str:
 def get_public_keys(host: str | None = None) -> str:
     """Return plaintext OpenSSH public keys for all SSH_KEYS entries and an optional host key.
 
-    Use host="SSH_PROD" to include that host's private_key-derived public key.
+    Use host="HOST_PROD" to include that host's private_key-derived public key.
     Private keys, passwords and passphrases are never returned.
     """
     try:

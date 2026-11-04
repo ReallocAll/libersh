@@ -16,8 +16,8 @@ Libersh exposes SSH capabilities allowed by the configured account. There are no
 Each host is one Horizon JSON environment variable, named after the host alias:
 
 ```text
-SSH_PROD={"host":"203.0.113.10","username":"ubuntu","password":"your-password"}
-SSH_DEV={"host":"dev.example.org","username":"root"}
+HOST_PROD={"host":"203.0.113.10","username":"ubuntu","password":"your-password"}
+HOST_DEV={"host":"dev.example.org","username":"root"}
 ```
 
 Host fields: `host` and `username` (required), `port` (default `22`),
@@ -49,7 +49,7 @@ files or SSH Agent identities; it only uses the environment-provided credentials
 
 For the public key corresponding to a stored private key, call the MCP tool
 `get_public_keys()`. It returns OpenSSH-format **plaintext public keys** for
-every `SSH_KEYS` entry, with its name. Call `get_public_keys(host="SSH_PROD")`
+every `SSH_KEYS` entry, with its name. Call `get_public_keys(host="HOST_PROD")`
 to also include that host's own `private_key` public key. Private keys,
 passwords and passphrases are never returned.
 
@@ -58,7 +58,7 @@ identity is **not verified**, allowing active network impersonation.
 Supply verified OpenSSH known_hosts entries in the host JSON to enable it.
 This is separate from account authentication and command authorization.
 
-Use `host="SSH_PROD"` to select a configured host. For an ephemeral
+Use `host="HOST_PROD"` to select a configured host. For an ephemeral
 VPS (for example, created with Vultr and provisioned with a public key
 derived from `get_public_keys()`), pass a direct SSH URL to **any**
 SSH/SFTP/job tool without creating a Horizon environment variable:
@@ -76,15 +76,15 @@ or agent identity. URLs cannot include a password, file path or query.
 Dynamic targets are not added to `list_hosts`, and because they have
 no `known_hosts` profile, **server identity is not verified**.
 Provision a target only when you intend to grant it SSH access with
-the global public key(s). `list_hosts` lists configured aliases without
-credentials and excludes `SSH_KEYS`. Tool arguments have no
+the global public key(s). `list_hosts` discovers `HOST_*` aliases without
+credentials. The separate `SSH_KEYS` variable is not a host profile. Tool arguments have no
 `username`, `port`, or `identity` overrides.
 
 ## Tools
 
 | Tool | Purpose |
 | --- | --- |
-| `list_hosts` | Configured SSH_* host aliases (excluding SSH_KEYS) |
+| `list_hosts` | Configured HOST_* host aliases |
 | `get_public_keys` | Export OpenSSH public keys from global and optional host private keys |
 | `exec` | One-shot SSH command; stdout and stderr separated, bounded output, exit status |
 | `stat`, `list_dir` | SFTP metadata and directory entries |

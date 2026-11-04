@@ -64,7 +64,7 @@ async def sshd(monkeypatch, tmp_path):
         server_host_keys=[key], process_factory=run_shell, sftp_factory=True,
     )
     port = listener.get_port()
-    monkeypatch.setenv("SSH_LOCAL", json.dumps({
+    monkeypatch.setenv("HOST_LOCAL", json.dumps({
         "host": "127.0.0.1", "username": "tester",
         "password": "test-pass", "port": port,
     }))
@@ -79,7 +79,7 @@ async def sshd(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_exec_and_sftp(sshd):
-    async with ssh_connection(resolve_target("SSH_LOCAL")) as conn:
+    async with ssh_connection(resolve_target("HOST_LOCAL")) as conn:
         result = await execute(conn, "printf 'hello'; printf ' bad' >&2; exit 6")
         assert result["status"] == "exited"
         assert result["exit_code"] == 6
@@ -100,12 +100,12 @@ async def test_exec_and_sftp(sshd):
 
 @pytest.mark.asyncio
 async def test_remote_job_survives_ssh_disconnect(sshd):
-    async with ssh_connection(resolve_target("SSH_LOCAL")) as conn:
+    async with ssh_connection(resolve_target("HOST_LOCAL")) as conn:
         started = await start_job(conn, "echo begin; sleep 1; echo done; exit 3")
         assert started["status"] == "started", started
         job_id = started["job_id"]
     # A brand-new connection must rediscover the same remote task.
-    async with ssh_connection(resolve_target("SSH_LOCAL")) as conn:
+    async with ssh_connection(resolve_target("HOST_LOCAL")) as conn:
         first = await status_job(conn, job_id)
         assert first["status"] in ("running", "exited"), first
         for _ in range(40):
@@ -129,14 +129,14 @@ async def test_mcp_tools_and_native_file_metadata(sshd):
                 "job_start", "job_status", "job_output", "job_stop", "job_list"} <= set(tools)
         definition = tools["upload_file"].model_dump(by_alias=True)
         assert (definition.get("_meta") or definition.get("meta"))["openai/fileParams"] == ["file"]
-        called = await client.call_tool("exec", {"host": "SSH_LOCAL", "command": "printf hello"})
+        called = await client.call_tool("exec", {"host": "HOST_LOCAL", "command": "printf hello"})
         data = json.loads(called.content[0].text)
         assert data["status"] == "exited"
         assert data["stdout"]["data"] == "hello"
 
 @pytest.mark.asyncio
 async def test_json_host_profile_over_ssh(sshd):
-    target = resolve_target("SSH_LOCAL")
+    target = resolve_target("HOST_LOCAL")
     assert target.username == "tester"
     assert next(connection_options(target))["known_hosts"] is None
     async with ssh_connection(target) as conn:
@@ -145,7 +145,7 @@ async def test_json_host_profile_over_ssh(sshd):
         assert result["stdout"]["data"] == "simple-profile"
     async with Client(mcp) as client:
         response = await client.call_tool("exec", {
-            "host": "SSH_LOCAL", "command": "printf via-mcp",
+            "host": "HOST_LOCAL", "command": "printf via-mcp",
         })
         data = json.loads(response.content[0].text)
         assert data["stdout"]["data"] == "via-mcp"
@@ -200,12 +200,12 @@ async def test_auth_falls_back_host_key_then_password_then_global_keys(monkeypat
             "wrong": wrong_global.export_private_key().decode(),
             "right": good_global.export_private_key().decode(),
         }))
-        monkeypatch.setenv("SSH_ORDERED", json.dumps({
+        monkeypatch.setenv("HOST_ORDERED", json.dumps({
             "host": "127.0.0.1", "username": "tester", "port": listener.get_port(),
             "private_key": specific.export_private_key().decode(),
             "password": "invalid-host-password",
         }))
-        async with ssh_connection(resolve_target("SSH_ORDERED")) as conn:
+        async with ssh_connection(resolve_target("HOST_ORDERED")) as conn:
             outcome = await execute(conn, "printf ordered")
         assert outcome["stdout"]["data"] == "ordered"
 
@@ -241,23 +241,23 @@ async def test_host_password_wins_before_global_key(monkeypatch):
         monkeypatch.setenv("SSH_KEYS", json.dumps({
             "global": good_global.export_private_key().decode(),
         }))
-        monkeypatch.setenv("SSH_PASSWORD_FIRST", json.dumps({
+        monkeypatch.setenv("HOST_PASSWORD_FIRST", json.dumps({
             "host": "127.0.0.1", "username": "tester", "port": listener.get_port(),
             "password": "correct-password",
         }))
-        async with ssh_connection(resolve_target("SSH_PASSWORD_FIRST")) as conn:
+        async with ssh_connection(resolve_target("HOST_PASSWORD_FIRST")) as conn:
             outcome = await execute(conn, "printf password")
         assert outcome["stdout"]["data"] == "password"
         assert events == [("password", "correct-password")]
         async with Client(mcp) as client:
-            result = await client.call_tool("get_public_keys", {"host": "SSH_PASSWORD_FIRST"})
+            result = await client.call_tool("get_public_keys", {"host": "HOST_PASSWORD_FIRST"})
             data = json.loads(result.content[0].text)
             assert len(data["keys"]) == 1
             assert data["keys"][0]["public_key"] == good_global.export_public_key().decode().strip()
             assert "PRIVATE KEY" not in result.content[0].text
         # A broken global vault must not block a successful host password.
         monkeypatch.setenv("SSH_KEYS", "broken-unneeded-configuration")
-        async with ssh_connection(resolve_target("SSH_PASSWORD_FIRST")) as conn:
+        async with ssh_connection(resolve_target("HOST_PASSWORD_FIRST")) as conn:
             confirm = await execute(conn, "printf no-global-used")
         assert confirm["stdout"]["data"] == "no-global-used"
     finally:
@@ -281,7 +281,7 @@ async def test_dynamic_ssh_url_real_key_authentication_and_mcp(monkeypatch, tmp_
             "vultr": key.export_private_key().decode("utf-8"),
         }))
         # A dynamic host must not use credentials from a matching stored host.
-        monkeypatch.setenv("SSH_WRONG", json.dumps({
+        monkeypatch.setenv("HOST_WRONG", json.dumps({
             "host": "127.0.0.1", "username": "tester",
             "password": "unwanted-password", "port": listener.get_port(),
         }))
