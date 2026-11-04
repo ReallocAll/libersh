@@ -1,4 +1,4 @@
-"""One SSH_<NAME> JSON environment variable per remote host."""
+"""SSH_<NAME> host profiles and an optional SSH_KEYS global private-key map."""
 
 import json
 import os
@@ -20,8 +20,8 @@ class Target:
 
 
 def _profile(name: str) -> dict:
-    if not isinstance(name, str) or not name.startswith("SSH_"):
-        raise ConfigurationError("Host must be an SSH_* environment variable name")
+    if not isinstance(name, str) or not name.startswith("SSH_") or name == "SSH_KEYS":
+        raise ConfigurationError("Host must be an SSH_<NAME> environment variable")
     raw = os.environ.get(name)
     if raw is None:
         raise ConfigurationError(f"SSH host {name} is not configured")
@@ -32,6 +32,26 @@ def _profile(name: str) -> dict:
     if not isinstance(config, dict):
         raise ConfigurationError(f"{name} must contain a JSON object")
     return config
+
+
+def _global_keys() -> dict:
+    raw = os.environ.get("SSH_KEYS", "{}")
+    try:
+        keys = json.loads(raw)
+    except ValueError as exc:
+        raise ConfigurationError("SSH_KEYS must contain a JSON object") from exc
+    if not isinstance(keys, dict):
+        raise ConfigurationError("SSH_KEYS must contain a JSON object")
+    return keys
+
+
+def _import_key(raw: str, label: str, passphrase: str | None = None):
+    if not isinstance(raw, str) or not raw:
+        raise ConfigurationError(f"{label} must contain an OpenSSH private key")
+    try:
+        return asyncssh.import_private_key(raw, passphrase=passphrase)
+    except (ValueError, asyncssh.KeyImportError) as exc:
+        raise ConfigurationError(f"Invalid private key in {label}") from exc
 
 
 def resolve_target(host: str) -> Target:
@@ -49,10 +69,10 @@ def resolve_target(host: str) -> Target:
 
 
 def list_hosts() -> dict:
-    """Expose host aliases and connection metadata, never their credentials."""
+    """Expose host aliases and connection metadata, never credentials."""
     hosts = []
     for name, raw in sorted(os.environ.items()):
-        if not name.startswith("SSH_") or not raw.lstrip().startswith("{"):
+        if name == "SSH_KEYS" or not name.startswith("SSH_") or not raw.lstrip().startswith("{"):
             continue
         target = resolve_target(name)
         profile = _profile(name)
@@ -64,38 +84,75 @@ def list_hosts() -> dict:
     return {"hosts": hosts}
 
 
-def connect_kwargs(target: Target) -> dict:
+def _known_hosts(profile: dict, name: str):
+    raw = profile.get("known_hosts")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw:
+        raise ConfigurationError(f"{name} known_hosts must be a nonempty string")
+    try:
+        return asyncssh.import_known_hosts(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"Invalid known_hosts in {name}") from exc
+
+
+def connection_options(target: Target) -> list[dict]:
+    """Build ordered, isolated authentication attempts from environment secrets.
+
+    Password must run between host and global private keys, so these stages
+    use separate SSH connections rather than AsyncSSH's publickey-first default.
+    """
     profile = _profile(target.name)
     password = profile.get("password")
     private_key = profile.get("private_key")
-    if not ((isinstance(password, str) and password) or
-            (isinstance(private_key, str) and private_key)):
-        raise ConfigurationError(f"{target.name} requires password or private_key")
+    if password is not None and (not isinstance(password, str) or not password):
+        raise ConfigurationError(f"{target.name} password must be a nonempty string")
 
-    kwargs = {"host": target.hostname, "port": target.port,
-              "username": target.username}
-    if isinstance(password, str) and password:
-        kwargs["password"] = password
-    if isinstance(private_key, str) and private_key:
-        try:
-            kwargs["client_keys"] = [asyncssh.import_private_key(
-                private_key, passphrase=profile.get("passphrase"))]
-        except (ValueError, asyncssh.KeyImportError) as exc:
-            raise ConfigurationError(f"Invalid private_key in {target.name}") from exc
+    host_key = (_import_key(private_key, target.name, profile.get("passphrase"))
+                if private_key is not None else None)
+    global_keys = [_import_key(raw, f"SSH_KEYS[{name}]")
+                   for name, raw in _global_keys().items()]
 
-    # No trust material is required for quick setup. Supplying known_hosts
-    # enables verified server identity; omission explicitly opts out.
-    known_hosts = profile.get("known_hosts")
-    if known_hosts is None:
-        kwargs["known_hosts"] = None
-    elif isinstance(known_hosts, str) and known_hosts:
-        try:
-            kwargs["known_hosts"] = asyncssh.import_known_hosts(known_hosts)
-        except ValueError as exc:
-            raise ConfigurationError(f"Invalid known_hosts in {target.name}") from exc
-    else:
-        raise ConfigurationError(f"{target.name} known_hosts must be a nonempty string")
-    return kwargs
+    common = {
+        "host": target.hostname, "username": target.username, "port": target.port,
+        "known_hosts": _known_hosts(profile, target.name),
+        "config": None, "agent_path": None, "client_keys": None,
+        "client_certs": [], "gss_auth": False, "gss_kex": False,
+        "host_based_auth": False,
+    }
+    attempts = []
+    if host_key is not None:
+        attempts.append({**common, "client_keys": [host_key],
+                         "preferred_auth": ["publickey"]})
+    if password:
+        attempts.append({**common, "password": password,
+                         "preferred_auth": ["password", "keyboard-interactive"]})
+    if global_keys:
+        attempts.append({**common, "client_keys": global_keys,
+                         "preferred_auth": ["publickey"]})
+    if not attempts:
+        raise ConfigurationError(f"{target.name} requires private_key, password or SSH_KEYS")
+    return attempts
+
+
+def get_public_keys(host: str | None = None) -> dict:
+    """Return plaintext public keys, derived from stored private keys."""
+    keys = [
+        {"source": "global", "name": name,
+         "public_key": _import_key(raw, f"SSH_KEYS[{name}]")
+                       .export_public_key().decode("utf-8").strip()}
+        for name, raw in _global_keys().items()
+    ]
+    if host is not None:
+        profile = _profile(host)
+        raw = profile.get("private_key")
+        if raw is not None:
+            keys.append({
+                "source": "host", "name": host,
+                "public_key": _import_key(raw, host, profile.get("passphrase"))
+                              .export_public_key().decode("utf-8").strip(),
+            })
+    return {"keys": keys}
 
 
 def job_base() -> str:

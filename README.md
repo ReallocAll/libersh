@@ -11,46 +11,63 @@ Libersh exposes SSH capabilities allowed by the configured account. There are no
 - Run locally: `python -m pip install -e . && python mcp_server.py`
 - Streamable HTTP, stateless MCP instances; set `PORT` if necessary
 
-### SSH hosts (one environment variable per host)
+### Host profiles and global private keys
 
-Configure one Horizon environment variable whose **name** is the host alias and
-whose **value** is a JSON object with everything needed to connect:
+Each host is one Horizon JSON environment variable, named after the host alias:
 
 ```text
 SSH_PROD={"host":"203.0.113.10","username":"ubuntu","password":"your-password"}
+SSH_DEV={"host":"dev.example.org","username":"root"}
 ```
 
-For another server, simply add a different variable, such as `SSH_DEV`.
-The agent selects a host with `host="SSH_PROD"`. `list_hosts` discovers
-configured aliases without returning passwords or private keys.
+Host fields: `host` and `username` (required), `port` (default `22`),
+`private_key`, `password`, `passphrase` (for host-encrypted private keys),
+`known_hosts`, and `desc` (all optional).
 
-Alternatively use a private key in the same JSON object:
+An additional environment variable contains multiple named **global private keys**:
 
-```json
-{"host":"203.0.113.10","username":"ubuntu","private_key":"-----BEGIN OPENSSH PRIVATE KEY-----\\n...\\n-----END OPENSSH PRIVATE KEY-----\\n"}
+```text
+SSH_KEYS={"main":"-----BEGIN OPENSSH PRIVATE KEY-----\\n...\\n-----END OPENSSH PRIVATE KEY-----\\n","backup":"-----BEGIN OPENSSH PRIVATE KEY-----\\n...\\n-----END OPENSSH PRIVATE KEY-----\\n"}
 ```
 
-Required fields: `host`, `username`, and **either** `password` or `private_key`.
-Optional fields: `port` (default `22`), `passphrase` (encrypted private key),
-`desc` (label shown in `list_hosts`), and `known_hosts` (verified OpenSSH host-key
-entries). Use JSON `\\n` escapes for multiline private keys or known_hosts
-values, not literal unescaped line breaks.
+The value is a JSON object mapping names to OpenSSH private-key strings. Keys are
+tried in JSON property insertion order. Use escaped `\\n` within JSON strings.
+There is no global password storage; a password always belongs to a specific
+host profile. No separate public-key storage is required.
 
-Without `known_hosts`, SSH server identity is **not verified**. This lowers
-configuration friction but allows an active network attacker to impersonate
-the server. Add `known_hosts` when SSH server authenticity matters.
-This is independent of remote command authorization.
+**Authentication order** (skip absent credentials):
 
-The legacy `SSH_HOST`, `SSH_USERNAME`, `SSH_PASSWORD`, `SSH_IDENTITIES`,
-and `SSH_HOSTS` formats have been removed rather than maintained as parallel
-configuration systems. Tool arguments no longer accept `username`, `port`,
-or `identity` overrides; these belong to each host's JSON object.
+1. Host-specific `private_key`
+2. Host-specific `password` (password or keyboard-interactive)
+3. All `SSH_KEYS` private keys, in configured order
+
+The stages make separate SSH connections after **authentication rejection**.
+A transport failure, host-key error, or SSH disconnect does not trigger another
+credential attempt. Many failed keys may exhaust the remote server's
+`MaxAuthTries` limit. Libersh does not load `~/.ssh/config`, default key
+files or SSH Agent identities; it only uses the environment-provided credentials.
+
+For the public key corresponding to a stored private key, call the MCP tool
+`get_public_keys()`. It returns OpenSSH-format **plaintext public keys** for
+every `SSH_KEYS` entry, with its name. Call `get_public_keys(host="SSH_PROD")`
+to also include that host's own `private_key` public key. Private keys,
+passwords and passphrases are never returned.
+
+**Server identity:** If a host profile omits `known_hosts`, SSH server
+identity is **not verified**, allowing active network impersonation.
+Supply verified OpenSSH known_hosts entries in the host JSON to enable it.
+This is separate from account authentication and command authorization.
+
+Host selection in tools uses `host="SSH_PROD"`; `list_hosts` lists aliases
+without credentials and does not treat `SSH_KEYS` as a host. The tool
+arguments do not accept `username`, `port`, or `identity` overrides.
 
 ## Tools
 
 | Tool | Purpose |
 | --- | --- |
-| `list_hosts` | Configured SSH_* host aliases |
+| `list_hosts` | Configured SSH_* host aliases (excluding SSH_KEYS) |
+| `get_public_keys` | Export OpenSSH public keys from global and optional host private keys |
 | `exec` | One-shot SSH command; stdout and stderr separated, bounded output, exit status |
 | `stat`, `list_dir` | SFTP metadata and directory entries |
 | `read_file` | Byte-addressed SFTP page, UTF-8 or Base64 |

@@ -5,7 +5,7 @@ import asyncssh
 import pytest
 
 from libersh.config import (
-    ConfigurationError, connect_kwargs, list_hosts, resolve_target,
+    ConfigurationError, connection_options, get_public_keys, list_hosts, resolve_target,
 )
 
 
@@ -21,8 +21,8 @@ def test_multiple_hosts_and_secret_free_discovery(monkeypatch):
     target = resolve_target("SSH_PROD")
     assert (target.hostname, target.username, target.port) == (
         "192.0.2.10", "ubuntu", 2222)
-    assert connect_kwargs(target)["password"] == "prod-secret"
-    assert connect_kwargs(target)["known_hosts"] is None
+    assert connection_options(target)[0]["password"] == "prod-secret"
+    assert connection_options(target)[0]["known_hosts"] is None
     hosts = list_hosts()
     assert {x["name"] for x in hosts["hosts"]} == {"SSH_DEV", "SSH_PROD"}
     assert next(x for x in hosts["hosts"] if x["name"] == "SSH_PROD")["desc"] == "Production server"
@@ -37,7 +37,7 @@ def test_private_key(monkeypatch):
         "private_key": key.export_private_key().decode("utf-8"),
     }))
     target = resolve_target("SSH_KEYED")
-    options = connect_kwargs(target)
+    options = connection_options(target)[0]
     assert len(options["client_keys"]) == 1
     assert options["known_hosts"] is None
     assert "private_key" not in repr(list_hosts())
@@ -50,7 +50,7 @@ def test_verified_known_hosts_optional(monkeypatch):
         "host": "example.org", "username": "tester", "password": "secret",
         "known_hosts": "example.org " + public,
     }))
-    assert connect_kwargs(resolve_target("SSH_VERIFIED"))["known_hosts"] is not None
+    assert connection_options(resolve_target("SSH_VERIFIED"))[0]["known_hosts"] is not None
 
 
 @pytest.mark.parametrize("value,match", [
@@ -71,13 +71,13 @@ def test_missing_or_invalid_credentials(monkeypatch):
     monkeypatch.setenv("SSH_EMPTY", json.dumps({
         "host": "example.org", "username": "root",
     }))
-    with pytest.raises(ConfigurationError, match="password or private_key"):
-        connect_kwargs(resolve_target("SSH_EMPTY"))
+    with pytest.raises(ConfigurationError, match="private_key, password or SSH_KEYS"):
+        connection_options(resolve_target("SSH_EMPTY"))
     monkeypatch.setenv("SSH_EMPTY", json.dumps({
         "host": "example.org", "username": "root", "private_key": "not-a-key",
     }))
     with pytest.raises(ConfigurationError, match="Invalid private_key"):
-        connect_kwargs(resolve_target("SSH_EMPTY"))
+        connection_options(resolve_target("SSH_EMPTY"))
 
 
 def test_no_dynamic_host_fallback(monkeypatch):
@@ -88,3 +88,63 @@ def test_no_dynamic_host_fallback(monkeypatch):
         resolve_target("example.org")
     with pytest.raises(ConfigurationError, match="not configured"):
         resolve_target("SSH_UNKNOWN")
+
+
+def test_global_keys_only_and_public_key_export(monkeypatch):
+    first = asyncssh.generate_private_key("ssh-ed25519")
+    second = asyncssh.generate_private_key("ssh-ed25519")
+    monkeypatch.setenv("SSH_KEYS", json.dumps({
+        "first": first.export_private_key().decode(),
+        "second": second.export_private_key().decode(),
+    }))
+    monkeypatch.setenv("SSH_BARE", json.dumps({
+        "host": "example.org", "username": "ubuntu",
+    }))
+    opts = connection_options(resolve_target("SSH_BARE"))
+    assert len(opts) == 1
+    assert opts[0]["client_keys"][0].export_public_key() == first.export_public_key()
+    assert opts[0]["client_keys"][1].export_public_key() == second.export_public_key()
+    assert opts[0]["agent_path"] is None and opts[0]["config"] is None
+    assert {x["name"] for x in list_hosts()["hosts"]} >= {"SSH_BARE"}
+    assert all(x["name"] != "SSH_KEYS" for x in list_hosts()["hosts"])
+    public = get_public_keys()
+    assert [x["name"] for x in public["keys"]] == ["first", "second"]
+    assert public["keys"][0]["public_key"] == first.export_public_key().decode().strip()
+    assert "PRIVATE KEY" not in repr(public)
+
+
+def test_ordered_host_private_key_password_then_global(monkeypatch):
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    global_key = asyncssh.generate_private_key("ssh-ed25519")
+    monkeypatch.setenv("SSH_KEYS", json.dumps({"main": global_key.export_private_key().decode()}))
+    monkeypatch.setenv("SSH_ORDER", json.dumps({
+        "host": "example.org", "username": "root",
+        "private_key": host_key.export_private_key().decode(),
+        "password": "host-password",
+    }))
+    opts = connection_options(resolve_target("SSH_ORDER"))
+    assert len(opts) == 3
+    assert opts[0]["client_keys"][0].export_public_key() == host_key.export_public_key()
+    assert "password" not in opts[0]
+    assert opts[1]["client_keys"] is None
+    assert opts[1]["password"] == "host-password"
+    assert "password" not in opts[2]
+    assert opts[2]["client_keys"][0].export_public_key() == global_key.export_public_key()
+    assert all(x["agent_path"] is None and x["config"] is None for x in opts)
+    assert all(x["client_certs"] == [] for x in opts)
+    public = get_public_keys("SSH_ORDER")["keys"]
+    assert [x["name"] for x in public] == ["main", "SSH_ORDER"]
+    assert public[-1]["public_key"] == host_key.export_public_key().decode().strip()
+    assert "host-password" not in repr(public)
+
+
+def test_invalid_global_key_configuration(monkeypatch):
+    monkeypatch.setenv("SSH_BARE", json.dumps({
+        "host": "example.org", "username": "root",
+    }))
+    monkeypatch.setenv("SSH_KEYS", "not-json")
+    with pytest.raises(ConfigurationError, match="SSH_KEYS must"):
+        connection_options(resolve_target("SSH_BARE"))
+    monkeypatch.setenv("SSH_KEYS", json.dumps({"broken": "not-a-private-key"}))
+    with pytest.raises(ConfigurationError, match="Invalid private key"):
+        connection_options(resolve_target("SSH_BARE"))

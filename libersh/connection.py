@@ -1,10 +1,24 @@
-"""Short-lived SSH connections; no Horizon instance-local SSH state."""
+"""Short-lived SSH connections using only environment-provided credentials."""
 from contextlib import asynccontextmanager
+
 import asyncssh
-from .config import Target, connect_kwargs
+
+from .config import Target, connection_options
 
 
 @asynccontextmanager
 async def ssh_connection(target: Target):
-    async with asyncssh.connect(**connect_kwargs(target), connect_timeout=15) as conn:
-        yield conn
+    last_error = None
+    for options in connection_options(target):
+        try:
+            conn = await asyncssh.connect(**options, connect_timeout=15)
+        except asyncssh.PermissionDenied as exc:
+            last_error = exc
+            continue
+
+        async with conn:
+            yield conn
+        return
+
+    assert last_error is not None
+    raise last_error

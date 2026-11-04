@@ -8,7 +8,7 @@ import asyncssh
 import pytest
 from fastmcp import Client
 
-from libersh.config import connect_kwargs, resolve_target
+from libersh.config import connection_options, resolve_target
 from libersh.connection import ssh_connection
 from libersh.execute import execute
 from libersh.files import read_sftp_page, write_sftp
@@ -68,6 +68,7 @@ async def sshd(monkeypatch, tmp_path):
         "host": "127.0.0.1", "username": "tester",
         "password": "test-pass", "port": port,
     }))
+    monkeypatch.delenv("SSH_KEYS", raising=False)
     monkeypatch.setenv("LIBERSH_JOB_BASE", str(tmp_path))
     try:
         yield tmp_path
@@ -137,7 +138,7 @@ async def test_mcp_tools_and_native_file_metadata(sshd):
 async def test_json_host_profile_over_ssh(sshd):
     target = resolve_target("SSH_LOCAL")
     assert target.username == "tester"
-    assert connect_kwargs(target)["known_hosts"] is None
+    assert connection_options(target)[0]["known_hosts"] is None
     async with ssh_connection(target) as conn:
         result = await execute(conn, "printf simple-profile")
         assert result["exit_code"] == 0
@@ -149,5 +150,111 @@ async def test_json_host_profile_over_ssh(sshd):
         data = json.loads(response.content[0].text)
         assert data["stdout"]["data"] == "via-mcp"
         assert "test-pass" not in (await client.call_tool("list_hosts", {})).content[0].text
+        keys_tool = next(t for t in await client.list_tools() if t.name == "get_public_keys")
+        assert "host" in keys_tool.inputSchema["properties"]
         tool = next(t for t in await client.list_tools() if t.name == "exec")
         assert not {"username", "port", "identity"} & set(tool.inputSchema["properties"])
+
+
+class OrderedAuthServer(asyncssh.SSHServer):
+    """Record which credentials reach the real SSH server."""
+    def __init__(self, public_key, accepted_password, events):
+        self.public_key = public_key
+        self.accepted_password = accepted_password
+        self.events = events
+
+    def begin_auth(self, username):
+        return True
+
+    def public_key_auth_supported(self):
+        return True
+
+    def validate_public_key(self, username, key):
+        public = key.export_public_key().decode().strip()
+        self.events.append(("key", public))
+        return username == "tester" and public == self.public_key
+
+    def password_auth_supported(self):
+        return True
+
+    def validate_password(self, username, password):
+        self.events.append(("password", password))
+        return username == "tester" and password == self.accepted_password
+
+
+@pytest.mark.asyncio
+async def test_auth_falls_back_host_key_then_password_then_global_keys(monkeypatch):
+    specific = asyncssh.generate_private_key("ssh-ed25519")
+    wrong_global = asyncssh.generate_private_key("ssh-ed25519")
+    good_global = asyncssh.generate_private_key("ssh-ed25519")
+    good_public = good_global.export_public_key().decode().strip()
+    events = []
+    listener = await asyncssh.listen(
+        "127.0.0.1", 0,
+        server_factory=lambda: OrderedAuthServer(good_public, "never-accepted", events),
+        server_host_keys=[asyncssh.generate_private_key("ssh-ed25519")],
+        process_factory=run_shell,
+    )
+    try:
+        monkeypatch.setenv("SSH_KEYS", json.dumps({
+            "wrong": wrong_global.export_private_key().decode(),
+            "right": good_global.export_private_key().decode(),
+        }))
+        monkeypatch.setenv("SSH_ORDERED", json.dumps({
+            "host": "127.0.0.1", "username": "tester", "port": listener.get_port(),
+            "private_key": specific.export_private_key().decode(),
+            "password": "invalid-host-password",
+        }))
+        async with ssh_connection(resolve_target("SSH_ORDERED")) as conn:
+            outcome = await execute(conn, "printf ordered")
+        assert outcome["stdout"]["data"] == "ordered"
+
+        tagged = [
+            "host-key" if kind == "key" and value == specific.export_public_key().decode().strip()
+            else "global-wrong" if kind == "key" and value == wrong_global.export_public_key().decode().strip()
+            else "global-right" if kind == "key" and value == good_public
+            else "host-password" if kind == "password" else "unknown"
+            for kind, value in events
+        ]
+        assert "host-key" in tagged and "host-password" in tagged
+        assert "global-wrong" in tagged and "global-right" in tagged
+        assert tagged.index("host-key") < tagged.index("host-password")
+        assert tagged.index("host-password") < tagged.index("global-wrong")
+        assert tagged.index("global-wrong") < tagged.index("global-right")
+    finally:
+        listener.close()
+        await listener.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_host_password_wins_before_global_key(monkeypatch):
+    good_global = asyncssh.generate_private_key("ssh-ed25519")
+    events = []
+    listener = await asyncssh.listen(
+        "127.0.0.1", 0,
+        server_factory=lambda: OrderedAuthServer(
+            good_global.export_public_key().decode().strip(), "correct-password", events),
+        server_host_keys=[asyncssh.generate_private_key("ssh-ed25519")],
+        process_factory=run_shell,
+    )
+    try:
+        monkeypatch.setenv("SSH_KEYS", json.dumps({
+            "global": good_global.export_private_key().decode(),
+        }))
+        monkeypatch.setenv("SSH_PASSWORD_FIRST", json.dumps({
+            "host": "127.0.0.1", "username": "tester", "port": listener.get_port(),
+            "password": "correct-password",
+        }))
+        async with ssh_connection(resolve_target("SSH_PASSWORD_FIRST")) as conn:
+            outcome = await execute(conn, "printf password")
+        assert outcome["stdout"]["data"] == "password"
+        assert events == [("password", "correct-password")]
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_public_keys", {"host": "SSH_PASSWORD_FIRST"})
+            data = json.loads(result.content[0].text)
+            assert len(data["keys"]) == 1
+            assert data["keys"][0]["public_key"] == good_global.export_public_key().decode().strip()
+            assert "PRIVATE KEY" not in result.content[0].text
+    finally:
+        listener.close()
+        await listener.wait_closed()

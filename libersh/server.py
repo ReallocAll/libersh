@@ -6,7 +6,8 @@ import httpx
 from fastmcp import FastMCP
 
 from . import __version__
-from .config import ConfigurationError, list_hosts as configured_hosts, resolve_target
+from .config import (ConfigurationError, get_public_keys as configured_public_keys,
+                     list_hosts as configured_hosts, resolve_target)
 from .connection import ssh_connection
 from .execute import execute
 from .files import (attrs_dict, decode_payload, file_operation,
@@ -50,6 +51,19 @@ def list_hosts() -> str:
     """List SSH_* host profiles without disclosing passwords or private keys."""
     try:
         return format_result(configured_hosts())
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool
+def get_public_keys(host: str | None = None) -> str:
+    """Return plaintext OpenSSH public keys for all SSH_KEYS entries and an optional host key.
+
+    Use host="SSH_PROD" to include that host's private_key-derived public key.
+    Private keys, passwords and passphrases are never returned.
+    """
+    try:
+        return format_result(configured_public_keys(host))
     except Exception as exc:
         return _error(exc)
 
