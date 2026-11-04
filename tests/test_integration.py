@@ -161,6 +161,35 @@ async def test_mcp_tools_and_native_file_metadata(sshd):
         assert len(keys_result.content) == 1
 
 @pytest.mark.asyncio
+async def test_mcp_sftp_page_budget_and_resume(sshd):
+    from libersh.response import MAX_MCP_RESPONSE_BYTES, framed_size
+
+    source = bytes(800_000)
+    path = sshd / "large-output.txt"
+    path.write_bytes(source)
+    offset = 0
+    received = bytearray()
+    async with Client(mcp) as client:
+        while offset < len(source):
+            result = await client.call_tool("read_file", {
+                "host": "HOST_LOCAL", "path": str(path),
+                "offset": offset, "limit_bytes": 2 * 1024 * 1024,
+            })
+            assert not result.is_error
+            assert result.structured_content is None
+            assert len(result.content) == 1
+            page = json.loads(result.content[0].text)
+            assert 0 < page["mcp_response_bytes"] < MAX_MCP_RESPONSE_BYTES
+            assert page["mcp_response_bytes"] == framed_size(page)
+            assert page["returned_bytes"] > 0
+            received.extend(page["data"].encode("utf-8"))
+            offset = page["next_offset"]
+            assert offset == len(received)
+            assert page["has_more"] == (offset < len(source))
+    assert received == source
+
+
+@pytest.mark.asyncio
 async def test_json_host_profile_over_ssh(sshd):
     target = resolve_target("HOST_LOCAL")
     assert target.username == "tester"

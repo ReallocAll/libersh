@@ -65,8 +65,10 @@ async def output_job(conn, job_id: str, stream: str = "stdout", *,
         raise ValueError("stream must be stdout, stderr or internal.log")
     root = directory(await remote_uid(conn), job_id)
     async with conn.start_sftp_client() as sftp:
-        page = await read_sftp_page(sftp, posixpath.join(root, stream), offset=offset, limit=limit)
-    return {"job_id": job_id, "stream": stream, **page}
+        return await read_sftp_page(
+            sftp, posixpath.join(root, stream), offset=offset, limit=limit,
+            metadata={"job_id": job_id, "stream": stream},
+        )
 
 
 async def stop_job(conn, job_id: str, grace_seconds: int = 3) -> dict:

@@ -5,17 +5,18 @@ import os
 import posixpath
 import uuid
 
-from .response import DEFAULT_PAGE, MAX_RAW_PAGE, encode_bytes, limit_bytes, page_payload, format_result
+from .response import DEFAULT_PAGE, fit_page_payload, limit_bytes
 
 
-async def read_sftp_page(sftp, path: str, *, offset: int = 0, limit: int = DEFAULT_PAGE) -> dict:
+async def read_sftp_page(sftp, path: str, *, offset: int = 0, limit: int = DEFAULT_PAGE,
+                         metadata: dict | None = None) -> dict:
     limit_bytes(limit)
     if type(offset) is not int or offset < 0:
         raise ValueError("offset must be nonnegative")
     attrs = await sftp.stat(path)
     size = attrs.size or 0
     if offset >= size:
-        return {"path": path, **page_payload(b"", offset, size)}
+        return fit_page_payload(b"", offset, size, limit, {**(metadata or {}), "path": path})
     data = bytearray()
     async with sftp.open(path, "rb", block_size=65536) as file:
         await file.seek(offset)
@@ -24,17 +25,8 @@ async def read_sftp_page(sftp, path: str, *, offset: int = 0, limit: int = DEFAU
             if not chunk:
                 break
             data.extend(chunk)
-    # JSON string escaping can be much bigger than the raw bytes. Fit the actual MCP envelope.
-    raw = bytes(data)
-    while True:
-        result = {"path": path, **page_payload(raw, offset, size)}
-        try:
-            format_result(result)
-            return result
-        except ValueError:
-            if len(raw) <= 1:
-                raise
-            raw = raw[:len(raw) // 2]
+    return fit_page_payload(bytes(data), offset, size, limit,
+                            {**(metadata or {}), "path": path})
 
 
 def decode_payload(data: str, encoding: str) -> bytes:
