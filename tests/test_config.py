@@ -76,7 +76,7 @@ def test_missing_or_invalid_credentials(monkeypatch):
     monkeypatch.setenv("SSH_EMPTY", json.dumps({
         "host": "example.org", "username": "root", "private_key": "not-a-key",
     }))
-    with pytest.raises(ConfigurationError, match="Invalid private_key"):
+    with pytest.raises(ConfigurationError, match="Invalid private key"):
         list(connection_options(resolve_target("SSH_EMPTY")))
 
 
