@@ -1,146 +1,120 @@
 # Libersh
 
-**Freedom to execute.** A Linux-first SSH/SFTP MCP for trusted AI agents, designed for Prefect Horizon.
+Libersh gives trusted MCP agents SSH command execution, SFTP file access, and persistent Linux jobs. It runs on Prefect Horizon or as a standalone Streamable HTTP server.
 
-Libersh exposes SSH capabilities allowed by the configured account. There are no command blacklists, path policies, or hidden approval steps. Authentication and access are enforced by Horizon, SSH, and the remote operating system; the MCP retains protocol integrity, optional SSH host-key verification, and bounded tool responses.
+Agents act with the permissions of the SSH account. Libersh adds no command blacklists, path restrictions, or approval steps; control access to the MCP endpoint through your hosting environment.
 
 ## Deployment
 
-- Python 3.12+ with `pyproject.toml` autodetection
-- Horizon entrypoint: **`mcp_server.py:mcp`**
-- Run locally: `python -m pip install -e . && python mcp_server.py`
-- Streamable HTTP, stateless MCP instances; set `PORT` if necessary
+Requires **Python 3.12+**. On **Prefect Horizon**, use **`mcp_server.py:mcp`** as the entrypoint and set the environment variables described below.
 
-### Host profiles, dynamic SSH URLs, and global private keys
+To run from source, configure the SSH environment variables below before starting the server:
 
-Each host is one Horizon JSON environment variable, named after the host alias:
-
-```text
-HOST_PROD={"host":"203.0.113.10","username":"ubuntu","password":"your-password"}
-HOST_DEV={"host":"dev.example.org","username":"root"}
+```sh
+git clone https://github.com/ReallocAll/libersh.git
+cd libersh
+python -m pip install -e .
+python mcp_server.py
 ```
 
-Host fields: `host` and `username` (required), `port` (default `22`),
-`private_key`, `password`, `passphrase` (for host-encrypted private keys),
-`known_hosts`, and `desc` (all optional).
+Standalone mode listens on `0.0.0.0:8000`; set `PORT` to change the port.
 
-An additional environment variable contains multiple named **global private keys**.
-The easiest Horizon configuration is a single-line Base64 body, without PEM
-`BEGIN`/`END` markers or newline escapes:
+## SSH configuration
+
+### Named hosts
+
+Each `HOST_*` environment variable contains one JSON host profile:
 
 ```text
-SSH_KEYS={"main":"b3BlbnNzaC1rZXktdjE...","backup":"MIIE..."}
-HOST_PROD={"host":"203.0.113.10","username":"ubuntu","private_key":"MIIE..."}
+HOST_DEV={"host":"dev.example.org","username":"ubuntu","password":"REPLACE_ME"}
 ```
 
-The values above are abbreviated placeholders, **not working private keys**.
-Copy the complete Base64 body of an OpenSSH, PKCS#1, or PKCS#8 private key
-(join any wrapped lines). Libersh decodes the Base64: OpenSSH's
-`openssh-key-v1` header is recognized and its PEM armor restored; otherwise
-the decoded DER is passed directly to AsyncSSH for PKCS#1/PKCS#8 parsing.
-The same behavior applies to both `SSH_KEYS` and host-specific `private_key`.
+Replace the example address and password. Only `host` and `username` are required fields; supply credentials in the profile or through `SSH_KEYS`.
 
-Full PEM/OpenSSH private keys remain supported (encode multiline strings in
-JSON using `\\n`). For legacy encrypted PEM with `Proc-Type` / `DEK-Info`
-headers, retain the full PEM text; removing these encryption parameters makes
-the key unusable. Encrypted PKCS#8 DER and encrypted OpenSSH keys require a
-host-specific `passphrase`; global `SSH_KEYS` does not accept a passphrase.
-Global keys are tried in JSON insertion order. There is no global password
-storage and no separate public-key storage.
+| Field | Meaning |
+| --- | --- |
+| `host`, `username` | Remote hostname or IP address and SSH user |
+| `port` | SSH port; defaults to `22` |
+| `private_key`, `password` | Host-specific credentials |
+| `passphrase` | Decrypts the host's `private_key` |
+| `known_hosts` | Trusted OpenSSH known_hosts contents, not a file path |
+| `desc` | Description returned by `list_hosts` |
 
-**Authentication order** (skip absent credentials):
+### Private keys
 
-1. Host-specific `private_key`
-2. Host-specific `password` (password or keyboard-interactive)
-3. All `SSH_KEYS` private keys, in configured order
-
-The stages make separate SSH connections after **authentication rejection**.
-A transport failure, host-key error, or SSH disconnect does not trigger another
-credential attempt. Many failed keys may exhaust the remote server's
-`MaxAuthTries` limit. Libersh does not load `~/.ssh/config`, default key
-files or SSH Agent identities; it only uses the environment-provided credentials.
-
-For the public key corresponding to a stored private key, call the MCP tool
-`get_public_keys()`. It returns OpenSSH-format **plaintext public keys** for
-every `SSH_KEYS` entry, with its name. Call `get_public_keys(host="HOST_PROD")`
-to also include that host's own `private_key` public key. Private keys,
-passwords and passphrases are never returned.
-
-**Server identity:** If a host profile omits `known_hosts`, SSH server
-identity is **not verified**, allowing active network impersonation.
-Supply verified OpenSSH known_hosts entries in the host JSON to enable it.
-This is separate from account authentication and command authorization.
-
-Use `host="HOST_PROD"` to select a configured host. For an ephemeral
-VPS (for example, created with Vultr and provisioned with a public key
-derived from `get_public_keys()`), pass a direct SSH URL to **any**
-SSH/SFTP/job tool without creating a Horizon environment variable:
+To share private keys across hosts, set `SSH_KEYS` to a JSON object:
 
 ```text
-exec(host="ssh://ubuntu@203.0.113.42", command="uname -a")
-exec(host="ssh://root@203.0.113.42:2222", command="id")
+SSH_KEYS={"main":"REPLACE_WITH_COMPLETE_PRIVATE_KEY"}
+```
+
+Both `private_key` and `SSH_KEYS` accept full PEM/OpenSSH text (use JSON `\n` escapes for newlines) or the complete single-line Base64 body without `BEGIN`/`END` markers. For legacy encrypted PEM, retain the full text and encryption headers. Encrypted keys require a host-specific `private_key` and `passphrase`; global keys must be usable without a passphrase.
+
+Credentials are tried in this order: **host private key → host password → global keys in JSON order**. Only authentication rejection advances to the next stage; transport and host-key failures stop the attempt. Libersh does not load local SSH config, default key files, or SSH Agent identities.
+
+`get_public_keys()` returns OpenSSH public keys for all global keys. Pass `host="HOST_DEV"` to also include that host's key. Private keys, passwords, and passphrases are not returned.
+
+### Dynamic targets
+
+Every SSH/SFTP/job tool also accepts `ssh://username@host[:port]` instead of a host alias. Examples use MCP tool-call notation:
+
+```text
+exec(host="ssh://ubuntu@203.0.113.42:2222", command="uname -a")
 read_file(host="ssh://ubuntu@[2001:db8::1]", path="/etc/os-release")
 ```
 
-Dynamic SSH URLs require a username and host, with optional port
-(default `22`). They use **only the global `SSH_KEYS` private keys**,
-and never any host-specific password/key, local SSH config, key file,
-or agent identity. URLs cannot include a password, file path or query.
-Dynamic targets are not added to `list_hosts`, and because they have
-no `known_hosts` profile, **server identity is not verified**.
-Provision a target only when you intend to grant it SSH access with
-the global public key(s). `list_hosts` discovers `HOST_*` aliases without
-credentials. The separate `SSH_KEYS` variable is not a host profile. Tool arguments have no
-`username`, `port`, or `identity` overrides.
+Dynamic URLs use only `SSH_KEYS`, do not inherit host profiles, and are not listed by `list_hosts`. Omit passwords, file paths, queries, and fragments; the default port is `22`.
+
+**Server identity is not verified** for dynamic URLs or profiles without `known_hosts`, allowing server impersonation. Use a named profile with verified OpenSSH known_hosts contents to enable verification.
 
 ## Tools
 
 | Tool | Purpose |
 | --- | --- |
-| `list_hosts` | Configured HOST_* host aliases |
-| `get_public_keys` | Export OpenSSH public keys from global and optional host private keys |
-| `exec` | One-shot SSH command; stdout and stderr separated, bounded output, exit status |
-| `stat`, `list_dir` | SFTP metadata and directory entries |
-| `read_file` | Byte-addressed SFTP page, UTF-8 or Base64 |
-| `write_file` | SFTP overwrite, append, offset or POSIX atomic replace |
-| `file_op` | mkdir/remove/rmdir/rename/posix_rename/chmod |
-| `upload_file` | Stream ChatGPT-authorized attachment into SFTP (`openai/fileParams`) |
-| `job_start`, `job_status` | Remote persistent job lifecycle |
-| `job_output`, `job_list`, `job_stop` | Log pagination, discovery, and process-group termination |
+| `list_hosts` | Discover configured hosts without exposing credentials |
+| `get_public_keys` | Derive public keys from stored private keys |
+| `exec` | Run a command and collect stdout, stderr, and exit status |
+| `stat`, `list_dir` | Inspect SFTP metadata and directory entries |
+| `read_file` | Read a file page as UTF-8 or Base64 |
+| `write_file` | Overwrite, append, write at an offset, or atomically replace a file |
+| `file_op` | `mkdir`, `remove`, `rmdir`, `rename`, `posix_rename`, or `chmod` |
+| `upload_file` | Stream a ChatGPT-authorized attachment to SFTP |
+| `job_start`, `job_status` | Start a persistent job and query its state |
+| `job_output`, `job_list`, `job_stop` | Read logs, discover jobs, and request termination |
 
-`exec` collects at most 512 KiB per call, drains excess output, and reports truncation. A nonzero exit code is not an MCP error. A timeout or transport loss does **not** establish that the remote process has stopped. For long commands or large output use `job_start`, then `job_status`/`job_output`.
+### Commands and files
 
-`upload_file` accepts ChatGPT's file reference (no large Base64 in model context), downloads from an HTTPS signed URL and uploads in bounded SFTP chunks. The source attachment cap is **512 MB (decimal)**. Direct writing can leave a partial target on error; `atomic_replace=true` writes a temporary file and uses the server's OpenSSH POSIX rename extension, failing if not supported. SHA-256 can be supplied for verification. Exporting remote files as client-downloadable attachments is not part of this initial release; use paginated `read_file` for inspection.
+- **Execution:** `exec` keeps at most 512 KiB total across stdout and stderr and reports truncation. Its default timeout is 60 seconds. A nonzero exit code is a normal result; a timeout or lost connection does not prove the remote process stopped. Use `job_start` for long commands or large logs.
+- **Pagination:** `read_file` and `job_output` use byte offsets. Continue with the returned `next_offset` while `has_more` is true; pages may shrink to fit the response budget or a UTF-8 boundary. Directory listings are not stable snapshots.
+- **Uploads:** `upload_file` requires client support for `openai/fileParams` and accepts attachments up to **512 MB (decimal)**. Supply `expected_sha256` to verify content. Remote files can be inspected through `read_file`; there is no attachment-download tool.
+- **Writes:** Direct writes can leave a partial file on failure. `write_file(mode="atomic_replace")` and `upload_file(atomic_replace=true)` require the server's SFTP POSIX rename extension.
 
 ## Persistent Linux jobs
 
-Each job is stored under `/var/tmp/libersh.<uid>.<32-hex-id>/` on the remote host. No remote Python environment, daemon, Redis, or long-lived Horizon connection is required.
+Jobs require Linux with `/proc`, `/bin/sh`, `nohup`, and util-linux (`setsid`, `flock`). Job commands run under `/bin/sh`; no remote Python or additional daemon is needed.
+
+State and logs live in `/var/tmp/libersh.<uid>.<job_id>/`, so another MCP instance can query jobs after SSH disconnect. Start a job, then use its returned `job_id`:
 
 ```text
-/var/tmp/libersh.1000.0123456789abcdef0123456789abcdef/
-├── meta.json
-├── command
-├── runner.sh
-├── pid
-├── pgid
-├── pid_start_ticks
-├── boot_id
-├── stdout
-├── stderr
-├── internal.log
-└── exit
+job_start(host="HOST_DEV", command="sleep 60; uname -a")
+job_status(host="HOST_DEV", job_id="<returned job_id>")
+job_output(host="HOST_DEV", job_id="<returned job_id>", stream="stdout", offset=0)
 ```
 
-On Linux with util-linux, `nohup` + `setsid` detach the job; `flock --close` holds a BSD lock on the **directory** itself until the job runner exits. `systemd-tmpfiles` respects such directory locks and skips active jobs when applying its age policy. The lock is released automatically when the owner terminates. `exit` is written by same-directory rename only after collecting the command exit code. Jobs can be queried by any Horizon instance after SSH disconnect.
+- If launch is interrupted, query the same `job_id` before submitting a new job. Caller-supplied IDs must be 32 lowercase hex characters. Reusing an ID prevents another launch **while its job directory exists**.
+- `unknown` means the final state could not be confirmed; it does not establish failure or termination. A host reboot may produce `interrupted`.
+- `job_stop` sends TERM, then KILL if needed, to a verified process group. Processes that leave the group may survive.
+- Host login-session policies can still terminate detached jobs. History retention follows the host's temporary-directory cleanup policy; there is no fixed retention period.
 
-Use an existing `job_id` to retry **querying** a possibly launched job; a repeated `job_start` with the same ID never launches the command a second time. `job_stop` verifies boot ID, `/proc` PID start ticks and process group before signaling. `job_stop` is a request, not a promise that escaped child processes have terminated.
+## Development
 
-State `unknown` is intentional when a crash, SIGKILL, or disconnect prevents observation of the final exit status. Host reboot changes boot ID; existing job directories don't imply running processes. Job history retention depends on the host's `systemd-tmpfiles` policy: `/var/tmp` often has a ~30 day inactivity age, but this is **not** a contractual job retention period. There is no custom garbage collector.
+```sh
+python -m pip install -e '.[test]'
+python -m pytest -q
+```
 
-**Known limits:** Linux (`/proc`, `setsid`, `flock`) is required for durable jobs. A host's systemd login-session policy may still terminate a detached job; verify on your target SSH environment. SFTP directory listings are not snapshot-stable. A direct attachment upload on a lost connection may leave a partial file; use atomic mode if the server supports it. Generated commands run under `/bin/sh`, independent of the account's interactive shell.
+CI runs on Linux with Python 3.12 and 3.13, including loopback SSH/SFTP tests and job behavior after disconnect.
 
-## Testing
+## License
 
-`python -m pip install -e '.[test]' && pytest -q`
-
-CI runs Python 3.12 and 3.13 on Linux. Tests cover config, MCP tool registration, real loopback SSH/SFTP, remote job state after disconnect, nonzero exit codes, binary paging, and the POSIX wrapper's directory lock. Production server execution is intentionally excluded from CI.
+[MIT](LICENSE)
